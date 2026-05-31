@@ -228,6 +228,8 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_claude_hooks,
             agent::agent_claude_hooks_status,
+            agent::agent_enable_codex_hooks,
+            agent::agent_codex_hooks_status,
             agent_sessions::commands::agent_providers,
             agent_sessions::commands::agent_list_sessions,
             agent_sessions::commands::agent_live_sessions,
