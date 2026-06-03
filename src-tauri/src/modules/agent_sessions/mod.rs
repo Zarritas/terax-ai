@@ -6,6 +6,7 @@
 
 pub mod commands;
 pub mod extract;
+pub mod fts;
 pub mod live;
 pub mod provider;
 pub mod providers;

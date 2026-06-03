@@ -76,3 +76,11 @@ impl DeleteError {
         }
     }
 }
+
+/// Lightweight reference to a session, used by search results.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRef {
+    pub provider: String,
+    pub session_id: String,
+}
