@@ -28,6 +28,10 @@ pub struct AgentSessionsState {
     /// be built in Default. Failed means we tried and gave up (search
     /// degrades to empty, the panel itself keeps working).
     fts: Mutex<FtsState>,
+    /// Single-flight for the indexing pass: concurrent list commands would
+    /// otherwise both see stale mtimes and read the same files twice
+    /// (observed as two overlapping "fts indexed" passes per scan burst).
+    index_lock: Mutex<()>,
 }
 
 enum FtsState {
@@ -49,6 +53,7 @@ impl AgentSessionsState {
             cache: Mutex::new(None),
             scan_lock: Mutex::new(()),
             fts: Mutex::new(FtsState::Uninitialized),
+            index_lock: Mutex::new(()),
         }
     }
 
@@ -159,6 +164,8 @@ pub async fn agent_list_sessions(
         let state = app.state::<AgentSessionsState>();
         let sessions = list_sessions_inner(&state, force)?;
         if let Some(fts) = state.fts(&app) {
+            // Serialize indexing: latecomers see fresh mtimes and no-op.
+            let _guard = state.index_lock.lock().map_err(|e| e.to_string())?;
             index_changed_sessions(&state.providers, &fts, &sessions);
         }
         Ok(sessions)
