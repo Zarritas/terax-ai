@@ -5353,6 +5353,7 @@ version = "0.7.3"
 dependencies = [
  "bytes",
  "dirs 6.0.0",
+ "filetime",
  "futures-util",
  "globset",
  "grep-matcher",
