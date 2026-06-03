@@ -66,6 +66,13 @@ fn list_sessions_inner(
     if let Some(sessions) = cached_sessions(state, CACHE_TTL)? {
         return Ok(sessions);
     }
+    if force {
+        // User-initiated refresh: drop provider result caches (OpenCode's
+        // long TTL) so the walk below is fully fresh.
+        for provider in &state.providers {
+            provider.invalidate_caches();
+        }
+    }
     let sessions = scan_all_sessions(&state.providers);
     let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
     *cache = Some((Instant::now(), sessions.clone()));

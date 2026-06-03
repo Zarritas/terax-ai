@@ -19,10 +19,11 @@ use crate::modules::agent_sessions::types::AgentSession;
 use crate::modules::proc::hide_console;
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-/// `opencode session list` boots OpenCode's full runtime — measured at 6-9s
+/// `opencode session list` boots OpenCode's full runtime — measured at 4-9s
 /// and ~245 MB RSS per invocation — so its results are reused far longer than
-/// the cheap file-based providers.
-const RESULT_TTL: Duration = Duration::from_secs(60);
+/// the cheap file-based providers. A user-initiated refresh bypasses this via
+/// `invalidate_caches`.
+const RESULT_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize)]
 struct OpencodeSessionRow {
@@ -107,6 +108,12 @@ impl AgentProvider for OpencodeProvider {
             "--session".to_string(),
             session_id.to_string(),
         ]
+    }
+
+    fn invalidate_caches(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = None;
+        }
     }
 }
 

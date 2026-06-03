@@ -25,6 +25,10 @@ pub trait AgentProvider: Send + Sync {
     }
     /// Argv to resume `session_id` (e.g. `["claude", "--resume", id]`).
     fn resume_argv(&self, session_id: &str) -> Vec<String>;
+    /// Drop any internal result caches so the next scan is fully fresh.
+    /// Called on user-initiated refresh; mtime-keyed file caches don't need
+    /// it (they self-invalidate), so the default is a no-op.
+    fn invalidate_caches(&self) {}
     /// Argv to start a fresh session (usually just the binary).
     fn new_session_argv(&self) -> Vec<String> {
         vec![self.binary().to_string()]
