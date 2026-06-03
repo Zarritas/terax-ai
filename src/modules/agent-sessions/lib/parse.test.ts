@@ -4,6 +4,7 @@ import {
   formatBytes,
   formatRelativeTime,
   groupByProject,
+  groupByProviderThenProject,
   matchesFilter,
   sessionLabel,
 } from "./parse";
@@ -72,6 +73,43 @@ describe("groupByProject", () => {
     // Sessions newest-first inside the group.
     expect(groups[1].sessions.map((s) => s.id)).toEqual(["c", "a"]);
     expect(groups[1].lastActivity).toBe(200);
+  });
+});
+
+describe("groupByProviderThenProject", () => {
+  it("sections by provider in stable order, projects inside", () => {
+    const groups = groupByProviderThenProject([
+      session({
+        id: "o1",
+        provider: "opencode",
+        cwd: "/w/x",
+        lastActivity: 900,
+      }),
+      session({ id: "c1", provider: "claude", cwd: "/w/x", lastActivity: 100 }),
+      session({
+        id: "c2",
+        provider: "claude",
+        cwd: "/w/y",
+        lastActivity: 300,
+        isActive: true,
+      }),
+      session({ id: "x1", provider: "codex", cwd: "/w/x", lastActivity: 200 }),
+    ]);
+    // Registry order regardless of recency; gemini absent (no sessions).
+    expect(groups.map((g) => g.provider)).toEqual([
+      "claude",
+      "codex",
+      "opencode",
+    ]);
+    const claude = groups[0];
+    expect(claude.sessionCount).toBe(2);
+    expect(claude.activeCount).toBe(1);
+    expect(claude.lastActivity).toBe(300);
+    expect(claude.projects.map((p) => p.name)).toEqual(["y", "x"]);
+  });
+
+  it("returns empty for no sessions", () => {
+    expect(groupByProviderThenProject([])).toEqual([]);
   });
 });
 

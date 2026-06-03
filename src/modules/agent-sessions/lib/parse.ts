@@ -1,6 +1,6 @@
 // Type-only import: erased at compile time, so pure helpers (and their
 // vitest suite) never load the tauri API module at runtime.
-import type { AgentSession } from "./native";
+import type { AgentProviderId, AgentSession } from "./native";
 
 export type ProjectGroup = {
   /** Absolute path shared by the sessions, or null for unknown cwds. */
@@ -71,6 +71,56 @@ export function groupByProject(sessions: AgentSession[]): ProjectGroup[] {
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : path;
+}
+
+export type ProviderGroup = {
+  provider: AgentProviderId;
+  projects: ProjectGroup[];
+  sessionCount: number;
+  activeCount: number;
+  lastActivity: number;
+};
+
+/** Stable section order, matching the backend's provider registry. */
+const PROVIDER_ORDER: AgentProviderId[] = [
+  "claude",
+  "codex",
+  "opencode",
+  "gemini",
+];
+
+/**
+ * Two-level grouping: provider sections in stable registry order (only those
+ * with sessions), each holding its cwd project groups newest-first.
+ */
+export function groupByProviderThenProject(
+  sessions: AgentSession[],
+): ProviderGroup[] {
+  const byProvider = new Map<AgentProviderId, AgentSession[]>();
+  for (const session of sessions) {
+    const list = byProvider.get(session.provider);
+    if (list) list.push(session);
+    else byProvider.set(session.provider, [session]);
+  }
+  const known = new Set<string>(PROVIDER_ORDER);
+  const order: AgentProviderId[] = [
+    ...PROVIDER_ORDER,
+    // Future providers the frontend doesn't know yet still get a section.
+    ...[...byProvider.keys()].filter((p) => !known.has(p)),
+  ];
+  const groups: ProviderGroup[] = [];
+  for (const provider of order) {
+    const list = byProvider.get(provider);
+    if (!list?.length) continue;
+    groups.push({
+      provider,
+      projects: groupByProject(list),
+      sessionCount: list.length,
+      activeCount: list.filter((s) => s.isActive).length,
+      lastActivity: Math.max(...list.map((s) => s.lastActivity)),
+    });
+  }
+  return groups;
 }
 
 /** "now", "5m", "3h", "2d", "4w" — compact, for narrow side-panel rows. */

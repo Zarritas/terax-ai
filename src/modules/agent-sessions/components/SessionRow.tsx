@@ -6,15 +6,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { AgentProviderId, AgentSession } from "../lib/native";
+import type { AgentSession } from "../lib/native";
 import { formatBytes, formatRelativeTime, sessionLabel } from "../lib/parse";
-
-const PROVIDER_CHIP: Record<AgentProviderId, string> = {
-  claude: "text-orange-500 border-orange-500/30 bg-orange-500/10",
-  codex: "text-emerald-500 border-emerald-500/30 bg-emerald-500/10",
-  opencode: "text-sky-500 border-sky-500/30 bg-sky-500/10",
-  gemini: "text-violet-500 border-violet-500/30 bg-violet-500/10",
-};
 
 type Props = {
   session: AgentSession;
@@ -34,14 +27,6 @@ export function SessionRow({ session, onResume }: Props) {
           )}
         >
           <span className="flex items-center gap-1.5">
-            <span
-              className={cn(
-                "inline-flex shrink-0 items-center rounded border px-1 text-[9px] font-semibold uppercase leading-4",
-                PROVIDER_CHIP[session.provider] ?? PROVIDER_CHIP.claude,
-              )}
-            >
-              {session.provider}
-            </span>
             <span className="min-w-0 flex-1 truncate text-[12px] text-foreground/90">
               {sessionLabel(session)}
             </span>

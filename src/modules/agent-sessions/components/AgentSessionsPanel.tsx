@@ -16,11 +16,25 @@ import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentSessions } from "../hooks/useAgentSessions";
-import type { AgentSession } from "../lib/native";
-import { groupByProject, matchesFilter } from "../lib/parse";
+import type { AgentProviderId, AgentSession } from "../lib/native";
+import { groupByProviderThenProject, matchesFilter } from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 import { SessionRow } from "./SessionRow";
+
+const PROVIDER_LABEL: Record<AgentProviderId, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  gemini: "Gemini",
+};
+
+const PROVIDER_ACCENT: Record<AgentProviderId, string> = {
+  claude: "text-orange-500",
+  codex: "text-emerald-500",
+  opencode: "text-sky-500",
+  gemini: "text-violet-500",
+};
 
 type Props = {
   bridge: AgentSessionsBridge;
@@ -40,11 +54,11 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const setFilter = useAgentSessionsStore((s) => s.setFilter);
   const toggleCollapsed = useAgentSessionsStore((s) => s.toggleCollapsed);
 
-  const groups = useMemo(() => {
+  const providerGroups = useMemo(() => {
     const visible = sessions.filter((s: AgentSession) =>
       matchesFilter(s, filter),
     );
-    return groupByProject(visible);
+    return groupByProviderThenProject(visible);
   }, [sessions, filter]);
 
   const startable = providers.filter((p) => p.binaryFound);
@@ -113,44 +127,87 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           {error ? (
             <p className="px-2 py-2 text-[11px] text-destructive">{error}</p>
           ) : null}
-          {!error && groups.length === 0 ? (
+          {!error && providerGroups.length === 0 ? (
             <p className="px-2 py-2 text-[11px] text-muted-foreground">
               {sessions.length === 0
                 ? "No agent sessions found. Sessions from Claude Code, Codex, OpenCode and Gemini will show up here."
                 : "No sessions match the filter."}
             </p>
           ) : null}
-          {groups.map((group) => {
-            const key = group.cwd ?? "";
-            const isCollapsed = collapsed.has(key);
+          {providerGroups.map((group) => {
+            const providerKey = `provider:${group.provider}`;
+            const providerCollapsed = collapsed.has(providerKey);
             return (
-              <div key={key} className="mb-0.5">
+              <div key={group.provider} className="mb-1">
                 <button
                   type="button"
-                  onClick={() => toggleCollapsed(key)}
+                  onClick={() => toggleCollapsed(providerKey)}
                   className="flex w-full cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-foreground/[0.045]"
-                  title={group.cwd ?? undefined}
                 >
                   <HugeiconsIcon
-                    icon={isCollapsed ? ArrowRight01Icon : ArrowDown01Icon}
+                    icon={
+                      providerCollapsed ? ArrowRight01Icon : ArrowDown01Icon
+                    }
                     size={12}
                     className="shrink-0 text-muted-foreground"
                   />
-                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-foreground/90">
-                    {group.name}
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide",
+                      PROVIDER_ACCENT[group.provider] ?? "text-foreground/90",
+                    )}
+                  >
+                    {PROVIDER_LABEL[group.provider] ?? group.provider}
                   </span>
+                  {group.activeCount > 0 ? (
+                    <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500">
+                      {group.activeCount}
+                    </span>
+                  ) : null}
                   <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                    {group.sessions.length}
+                    {group.sessionCount}
                   </span>
                 </button>
-                {!isCollapsed
-                  ? group.sessions.map((session) => (
-                      <SessionRow
-                        key={`${session.provider}:${session.id}`}
-                        session={session}
-                        onResume={bridge.resumeSession}
-                      />
-                    ))
+                {!providerCollapsed
+                  ? group.projects.map((project) => {
+                      const projectKey = `${group.provider}:${project.cwd ?? ""}`;
+                      const projectCollapsed = collapsed.has(projectKey);
+                      return (
+                        <div key={projectKey} className="mb-0.5 pl-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleCollapsed(projectKey)}
+                            className="flex w-full cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-foreground/[0.045]"
+                            title={project.cwd ?? undefined}
+                          >
+                            <HugeiconsIcon
+                              icon={
+                                projectCollapsed
+                                  ? ArrowRight01Icon
+                                  : ArrowDown01Icon
+                              }
+                              size={11}
+                              className="shrink-0 text-muted-foreground"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-foreground/90">
+                              {project.name}
+                            </span>
+                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                              {project.sessions.length}
+                            </span>
+                          </button>
+                          {!projectCollapsed
+                            ? project.sessions.map((session) => (
+                                <SessionRow
+                                  key={`${session.provider}:${session.id}`}
+                                  session={session}
+                                  onResume={bridge.resumeSession}
+                                />
+                              ))
+                            : null}
+                        </div>
+                      );
+                    })
                   : null}
               </div>
             );
