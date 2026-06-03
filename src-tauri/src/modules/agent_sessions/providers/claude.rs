@@ -153,6 +153,7 @@ fn build_session(
     Some(AgentSession {
         provider: "claude".to_string(),
         is_active: active.contains(&id),
+        resume_argv: Vec::new(),
         id,
         title,
         // Resume must run under the cwd the project dir was named after;

@@ -3,8 +3,8 @@
 //
 // Read-only by design: providers derive every path from the home directory and
 // never accept paths from the frontend.
-#![allow(dead_code)] // wired into commands + lib.rs in a follow-up commit
 
+pub mod commands;
 pub mod live;
 pub mod provider;
 pub mod providers;

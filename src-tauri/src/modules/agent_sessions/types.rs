@@ -20,6 +20,10 @@ pub struct AgentSession {
     /// True when the provider's live registry reports the session as running.
     /// Only Claude Code persists such a registry today.
     pub is_active: bool,
+    /// Argv the frontend writes into a new terminal to resume this session.
+    /// Filled centrally from `AgentProvider::resume_argv` so the command
+    /// surface stays in one place; providers construct it empty.
+    pub resume_argv: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -31,6 +35,8 @@ pub struct AgentProviderInfo {
     pub available: bool,
     /// The provider's binary is resolvable in PATH (resume will work).
     pub binary_found: bool,
+    /// Argv the frontend writes into a new terminal to start a fresh session.
+    pub new_session_argv: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

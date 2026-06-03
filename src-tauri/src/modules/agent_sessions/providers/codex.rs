@@ -196,6 +196,7 @@ fn build_session(rollout: &Path, names: &HashMap<String, String>) -> Option<Agen
         size_bytes: Some(meta.len()),
         last_activity: mtime_secs(rollout).unwrap_or(0.0),
         is_active: false,
+        resume_argv: Vec::new(),
     })
 }
 
