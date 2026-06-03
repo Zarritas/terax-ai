@@ -3,9 +3,12 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 
+use crate::modules::agent_sessions::fts::FtsIndex;
 use crate::modules::agent_sessions::provider::{binary_in_path, AgentProvider};
 use crate::modules::agent_sessions::providers::all_providers;
-use crate::modules::agent_sessions::types::{AgentProviderInfo, AgentSession, LiveAgentSession};
+use crate::modules::agent_sessions::types::{
+    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, SessionRef,
+};
 
 /// Repeated UI refetches (watcher debounce, window focus) within this window
 /// reuse the last scan instead of re-walking every provider.
@@ -21,6 +24,16 @@ pub struct AgentSessionsState {
     /// parallel (observed: 3x an 11s cold scan). Held across the scan so
     /// latecomers wait and then hit the freshly written cache.
     scan_lock: Mutex<()>,
+    /// Lazy FTS index handle: needs the AppHandle path resolver, so it can't
+    /// be built in Default. Failed means we tried and gave up (search
+    /// degrades to empty, the panel itself keeps working).
+    fts: Mutex<FtsState>,
+}
+
+enum FtsState {
+    Uninitialized,
+    Ready(std::sync::Arc<FtsIndex>),
+    Failed,
 }
 
 impl Default for AgentSessionsState {
@@ -35,6 +48,34 @@ impl AgentSessionsState {
             providers,
             cache: Mutex::new(None),
             scan_lock: Mutex::new(()),
+            fts: Mutex::new(FtsState::Uninitialized),
+        }
+    }
+
+    /// Open (once) and return the FTS index. None when it failed to open.
+    fn fts(&self, app: &AppHandle) -> Option<std::sync::Arc<FtsIndex>> {
+        let mut slot = self.fts.lock().ok()?;
+        match &*slot {
+            FtsState::Ready(idx) => return Some(idx.clone()),
+            FtsState::Failed => return None,
+            FtsState::Uninitialized => {}
+        }
+        let opened = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| e.to_string())
+            .and_then(|dir| FtsIndex::open(&dir.join("agent-sessions-index.sqlite3")));
+        match opened {
+            Ok(idx) => {
+                let idx = std::sync::Arc::new(idx);
+                *slot = FtsState::Ready(idx.clone());
+                Some(idx)
+            }
+            Err(err) => {
+                log::warn!("agent_sessions: fts index unavailable: {err}");
+                *slot = FtsState::Failed;
+                None
+            }
         }
     }
 }
@@ -116,9 +157,112 @@ pub async fn agent_list_sessions(
     let force = force.unwrap_or(false);
     blocking(move || {
         let state = app.state::<AgentSessionsState>();
-        list_sessions_inner(&state, force)
+        let sessions = list_sessions_inner(&state, force)?;
+        if let Some(fts) = state.fts(&app) {
+            index_changed_sessions(&state.providers, &fts, &sessions);
+        }
+        Ok(sessions)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn agent_delete_session(
+    provider: String,
+    session_id: String,
+    force: Option<bool>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let force = force.unwrap_or(false);
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        let p = state
+            .providers
+            .iter()
+            .find(|p| p.id() == provider)
+            .ok_or_else(|| format!("unknown provider {provider}"))?;
+        // Serialize against scans so we never delete under a walk in flight.
+        let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
+        p.delete_session(&session_id, force)
+            .map_err(|e| e.to_user_string())?;
+        if let Some(fts) = state.fts(&app) {
+            fts.delete(&provider, &session_id);
+        }
+        let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
+        *cache = None;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_session_preview(
+    provider: String,
+    session_id: String,
+    app: AppHandle,
+) -> Result<Vec<PreviewTurn>, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        let p = state
+            .providers
+            .iter()
+            .find(|p| p.id() == provider)
+            .ok_or_else(|| format!("unknown provider {provider}"))?;
+        p.preview(&session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_search_sessions(
+    query: String,
+    app: AppHandle,
+) -> Result<Vec<SessionRef>, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        Ok(state
+            .fts(&app)
+            .map(|fts| fts.search(&query, 200))
+            .unwrap_or_default())
+    })
+    .await
+}
+
+/// Reindex sessions whose file mtime moved since the last indexing pass.
+/// Providers without readable content (fts_content -> None) are stamped with
+/// empty text so they aren't re-read on every scan.
+fn index_changed_sessions(
+    providers: &[Box<dyn AgentProvider>],
+    fts: &FtsIndex,
+    sessions: &[AgentSession],
+) {
+    let started = Instant::now();
+    let mut indexed = 0usize;
+    for session in sessions {
+        if session.provider == "opencode" {
+            continue; // content lives in opencode's own database
+        }
+        if !fts.needs_reindex(&session.provider, &session.id, session.last_activity) {
+            continue;
+        }
+        let Some(provider) = providers.iter().find(|p| p.id() == session.provider) else {
+            continue;
+        };
+        let content = provider.fts_content(&session.id).unwrap_or_default();
+        fts.upsert(
+            &session.provider,
+            &session.id,
+            session.last_activity,
+            &content,
+        );
+        indexed += 1;
+    }
+    if indexed > 0 {
+        log::info!(
+            "agent_sessions: fts indexed {indexed} sessions in {}ms",
+            started.elapsed().as_millis()
+        );
+    }
 }
 
 #[tauri::command]
@@ -242,6 +386,9 @@ mod tests {
         ) -> Result<(), crate::modules::agent_sessions::types::DeleteError> {
             Ok(())
         }
+        fn fts_content(&self, session_id: &str) -> Option<String> {
+            Some(format!("contenido de {session_id}"))
+        }
     }
 
     fn fake_state(scans: &Arc<AtomicUsize>) -> AgentSessionsState {
@@ -278,6 +425,23 @@ mod tests {
             list_sessions_inner(&state, false).unwrap();
         }
         assert_eq!(scans.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn indexing_is_incremental_by_mtime() {
+        let scans = Arc::new(AtomicUsize::new(0));
+        let state = fake_state(&scans);
+        let fts = FtsIndex::open_in_memory().unwrap();
+        let sessions = list_sessions_inner(&state, true).unwrap();
+
+        index_changed_sessions(&state.providers, &fts, &sessions);
+        assert_eq!(fts.search("contenido", 10).len(), 2);
+        // Same mtimes: a second pass must not rewrite anything (search keeps
+        // working and needs_reindex is false for every session).
+        index_changed_sessions(&state.providers, &fts, &sessions);
+        for s in &sessions {
+            assert!(!fts.needs_reindex(&s.provider, &s.id, s.last_activity));
+        }
     }
 
     #[test]
