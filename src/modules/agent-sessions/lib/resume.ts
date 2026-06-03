@@ -27,6 +27,12 @@ export type AgentSessionsBridgeDeps = {
   notify: (message: string) => void;
   /** Fallback cwd for sessions whose provider couldn't recover one. */
   fallbackCwd: () => string | null;
+  /**
+   * `exec` the agent in place of the shell so quitting the session ends the
+   * PTY and Terax's existing leaf-exit flow closes the pane/tab. POSIX shells
+   * only — false on Windows, where the tab falls back to a prompt.
+   */
+  execIntoCommand: boolean;
 };
 
 export type AgentSessionsBridge = {
@@ -70,12 +76,11 @@ export function createAgentSessionsBridge(
       provider === "claude"
         ? deps.enableClaudeHooks().catch(() => {})
         : Promise.resolve();
+    const command = argvToCommand(argv);
+    const line = deps.execIntoCommand ? `exec ${command}` : command;
     void (async () => {
       await Promise.all([deps.whenSessionReady(ref.leafId), hooks]);
-      if (
-        !deps.writeToSession(ref.leafId, `${argvToCommand(argv)}\r`) &&
-        sessionId
-      ) {
+      if (!deps.writeToSession(ref.leafId, `${line}\r`) && sessionId) {
         deps.removeManaged(ref.leafId);
       }
     })();

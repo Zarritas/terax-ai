@@ -11,6 +11,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getLaunchDir } from "@/lib/launchDir";
+import { IS_WINDOWS } from "@/lib/platform";
 import { quoteShellArg } from "@/lib/shellQuote";
 import { useZoom } from "@/lib/useZoom";
 import {
@@ -679,6 +680,7 @@ export default function App() {
         enableClaudeHooks: () => invoke("agent_enable_claude_hooks"),
         notify: (message) => toast.info(message),
         fallbackCwd: () => explorerRoot ?? launchCwd ?? home ?? null,
+        execIntoCommand: !IS_WINDOWS,
       }),
     [newAgentTab, setActiveId, focusPane, explorerRoot, launchCwd, home],
   );

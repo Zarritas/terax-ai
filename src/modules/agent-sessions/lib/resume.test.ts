@@ -41,6 +41,7 @@ function makeDeps(): AgentSessionsBridgeDeps & {
     enableClaudeHooks: vi.fn(() => Promise.resolve()),
     notify: vi.fn(),
     fallbackCwd: vi.fn(() => "/home/user"),
+    execIntoCommand: true,
   };
 }
 
@@ -93,7 +94,8 @@ describe("resumeSession", () => {
       expect.objectContaining({ sessionId: "sid-1", tabId: 10, leafId: 11 }),
     );
     await flush();
-    expect(deps.writes).toEqual([[11, "claude --resume sid-1\r"]]);
+    // exec replaces the shell so quitting the agent closes the pane.
+    expect(deps.writes).toEqual([[11, "exec claude --resume sid-1\r"]]);
     expect(deps.enableClaudeHooks).toHaveBeenCalled();
   });
 
@@ -112,7 +114,7 @@ describe("resumeSession", () => {
     );
     await flush();
     expect(deps.enableClaudeHooks).not.toHaveBeenCalled();
-    expect(deps.writes).toEqual([[11, "codex resume sid-1\r"]]);
+    expect(deps.writes).toEqual([[11, "exec codex resume sid-1\r"]]);
   });
 
   it("unregisters the managed agent when the PTY write fails", async () => {
@@ -142,6 +144,15 @@ describe("newSession", () => {
     );
     expect(deps.registerManaged).not.toHaveBeenCalled();
     await flush();
-    expect(deps.writes).toEqual([[11, "opencode\r"]]);
+    expect(deps.writes).toEqual([[11, "exec opencode\r"]]);
+  });
+
+  it("writes a plain command when exec is unavailable (Windows shells)", async () => {
+    const deps = makeDeps();
+    deps.execIntoCommand = false;
+    const bridge = createAgentSessionsBridge(deps);
+    bridge.resumeSession(session({}));
+    await flush();
+    expect(deps.writes).toEqual([[11, "claude --resume sid-1\r"]]);
   });
 });
