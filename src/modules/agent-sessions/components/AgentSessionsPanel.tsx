@@ -17,7 +17,11 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentSessions } from "../hooks/useAgentSessions";
 import type { AgentProviderId, AgentSession } from "../lib/native";
-import { groupByProviderThenProject, matchesFilter } from "../lib/parse";
+import {
+  groupByProviderThenProject,
+  matchesFilter,
+  parseFilter,
+} from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 import { SessionRow } from "./SessionRow";
@@ -54,12 +58,15 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const setFilter = useAgentSessionsStore((s) => s.setFilter);
   const toggleCollapsed = useAgentSessionsStore((s) => s.toggleCollapsed);
 
+  const metadata = useAgentSessionsStore((s) => s.metadata);
+
   const providerGroups = useMemo(() => {
+    const parsed = parseFilter(filter);
     const visible = sessions.filter((s: AgentSession) =>
-      matchesFilter(s, filter),
+      matchesFilter(s, parsed, metadata[`${s.provider}:${s.id}`]),
     );
     return groupByProviderThenProject(visible);
-  }, [sessions, filter]);
+  }, [sessions, filter, metadata]);
 
   const startable = providers.filter((p) => p.binaryFound);
   const activeCount = sessions.filter((s) => s.isActive).length;

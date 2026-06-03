@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSession } from "./native";
 import {
+  colorClasses,
   formatBytes,
   formatRelativeTime,
   groupByProject,
   groupByProviderThenProject,
   matchesFilter,
+  parseFilter,
   sessionLabel,
 } from "./parse";
+
+const match = (
+  s: AgentSession,
+  q: string,
+  meta?: Parameters<typeof matchesFilter>[2],
+) => matchesFilter(s, parseFilter(q), meta);
 
 function session(overrides: Partial<AgentSession>): AgentSession {
   return {
@@ -30,6 +38,12 @@ describe("sessionLabel", () => {
     expect(sessionLabel(session({ title: "Mi refactor" }))).toBe("Mi refactor");
   });
 
+  it("local rename wins over the title", () => {
+    expect(
+      sessionLabel(session({ title: "Mi refactor" }), { name: "Renombrada" }),
+    ).toBe("Renombrada");
+  });
+
   it("falls back to a trimmed id", () => {
     const s = session({ id: "0123456789abcdef0123456789" });
     expect(sessionLabel(s)).toBe("0123456789abcdef01…");
@@ -45,19 +59,65 @@ describe("matchesFilter", () => {
   });
 
   it("empty query matches", () => {
-    expect(matchesFilter(s, "")).toBe(true);
-    expect(matchesFilter(s, "   ")).toBe(true);
+    expect(match(s, "")).toBe(true);
+    expect(match(s, "   ")).toBe(true);
   });
 
   it("matches across fields, case-insensitive", () => {
-    expect(matchesFilter(s, "PARSER")).toBe(true);
-    expect(matchesFilter(s, "connector")).toBe(true);
-    expect(matchesFilter(s, "feat/parser")).toBe(true);
+    expect(match(s, "PARSER")).toBe(true);
+    expect(match(s, "connector")).toBe(true);
+    expect(match(s, "feat/parser")).toBe(true);
   });
 
   it("requires every word to match (AND)", () => {
-    expect(matchesFilter(s, "parser connector")).toBe(true);
-    expect(matchesFilter(s, "parser nomatch")).toBe(false);
+    expect(match(s, "parser connector")).toBe(true);
+    expect(match(s, "parser nomatch")).toBe(false);
+  });
+
+  it("matches local rename and tags in the free-text haystack", () => {
+    const meta = { name: "Mi nombre local", tags: ["urgente"] };
+    expect(match(s, "nombre local", meta)).toBe(true);
+    expect(match(s, "urgente", meta)).toBe(true);
+  });
+
+  it("tag: predicate requires every listed tag (AND)", () => {
+    const meta = { tags: ["bug", "cliente-acme"] };
+    expect(match(s, "tag:bug", meta)).toBe(true);
+    expect(match(s, "tag:bug,acme", meta)).toBe(true);
+    expect(match(s, "tag:bug,otro", meta)).toBe(false);
+    expect(match(s, "tag:bug")).toBe(false); // sin meta no hay tags
+  });
+
+  it("branch:/id:/path: predicates filter on their fields", () => {
+    expect(match(s, "branch:feat")).toBe(true);
+    expect(match(s, "branch:main")).toBe(false);
+    expect(match(s, "id:abc")).toBe(true);
+    expect(match(s, "path:gextia")).toBe(true);
+    expect(match(s, "path:otro")).toBe(false);
+  });
+});
+
+describe("parseFilter", () => {
+  it("separates content terms from predicates and free text", () => {
+    const parsed = parseFilter("content:facturas tag:bug parser content:iva");
+    expect(parsed.content).toBe("facturas iva");
+    expect(parsed.predicates).toEqual([{ key: "tag", value: "bug" }]);
+    expect(parsed.text).toBe("parser");
+  });
+
+  it("unknown prefixes stay as free text", () => {
+    const parsed = parseFilter("foo:bar baz");
+    expect(parsed.content).toBeNull();
+    expect(parsed.predicates).toEqual([]);
+    expect(parsed.text).toBe("foo:bar baz");
+  });
+});
+
+describe("colorClasses", () => {
+  it("resolves known tokens and rejects unknown", () => {
+    expect(colorClasses("sky")?.bar).toBe("bg-sky-500");
+    expect(colorClasses("nope")).toBeNull();
+    expect(colorClasses(undefined)).toBeNull();
   });
 });
 

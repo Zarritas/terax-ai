@@ -1,5 +1,6 @@
-// Type-only import: erased at compile time, so pure helpers (and their
+// Type-only imports: erased at compile time, so pure helpers (and their
 // vitest suite) never load the tauri API module at runtime.
+import type { SessionMetadata } from "./metadata";
 import type { AgentProviderId, AgentSession } from "./native";
 
 export type ProjectGroup = {
@@ -11,28 +12,117 @@ export type ProjectGroup = {
   lastActivity: number;
 };
 
-/** Visible label for a session row: title, else a trimmed id. */
-export function sessionLabel(session: AgentSession): string {
+/** Visible label for a session row: local rename > title > trimmed id. */
+export function sessionLabel(
+  session: AgentSession,
+  meta?: SessionMetadata,
+): string {
+  if (meta?.name?.trim()) return meta.name;
   if (session.title?.trim()) return session.title;
   return session.id.length > 18 ? `${session.id.slice(0, 18)}…` : session.id;
 }
 
+export type ParsedFilter = {
+  /** Terms behind `content:` — resolved asynchronously against the FTS index. */
+  content: string | null;
+  /** Structured predicates (tag:, branch:, id:, path:). */
+  predicates: Array<{ key: "tag" | "branch" | "id" | "path"; value: string }>;
+  /** Remaining free text, lowercased. */
+  text: string;
+};
+
+const PREDICATE_KEYS = new Set(["tag", "branch", "id", "path", "content"]);
+
+/** Split a filter query into content search, structured predicates and free
+ * text. `content:` swallows the rest of the token only (terms are spaces). */
+export function parseFilter(raw: string): ParsedFilter {
+  const content: string[] = [];
+  const predicates: ParsedFilter["predicates"] = [];
+  const text: string[] = [];
+  for (const token of raw.trim().split(/\s+/)) {
+    if (!token) continue;
+    const colon = token.indexOf(":");
+    const key = colon > 0 ? token.slice(0, colon).toLowerCase() : "";
+    if (!PREDICATE_KEYS.has(key)) {
+      text.push(token.toLowerCase());
+      continue;
+    }
+    const value = token.slice(colon + 1).toLowerCase();
+    if (!value) continue;
+    if (key === "content") content.push(value);
+    else
+      predicates.push({ key: key as "tag" | "branch" | "id" | "path", value });
+  }
+  return {
+    content: content.length ? content.join(" ") : null,
+    predicates,
+    text: text.join(" "),
+  };
+}
+
 /**
- * Case-insensitive match over label, cwd, branch and id. An empty query
- * matches everything.
+ * Case-insensitive match over label (including local rename), cwd, branch,
+ * id and tags, plus the structured predicates. The `content:` part is
+ * resolved by the caller against the FTS index.
  */
-export function matchesFilter(session: AgentSession, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
+export function matchesFilter(
+  session: AgentSession,
+  filter: ParsedFilter,
+  meta?: SessionMetadata,
+): boolean {
+  const tags = meta?.tags ?? [];
+  for (const { key, value } of filter.predicates) {
+    if (key === "tag") {
+      const wanted = value.split(",").filter(Boolean);
+      if (!wanted.every((w) => tags.some((t) => t.includes(w)))) return false;
+    }
+    if (
+      key === "branch" &&
+      !(session.branch ?? "").toLowerCase().includes(value)
+    ) {
+      return false;
+    }
+    if (key === "id" && !session.id.toLowerCase().includes(value)) return false;
+    if (key === "path" && !(session.cwd ?? "").toLowerCase().includes(value)) {
+      return false;
+    }
+  }
+  if (!filter.text) return true;
   const haystack = [
+    meta?.name ?? "",
     session.title ?? "",
     session.cwd ?? "",
     session.branch ?? "",
     session.id,
+    tags.join(" "),
   ]
     .join(" ")
     .toLowerCase();
-  return q.split(/\s+/).every((part) => haystack.includes(part));
+  return filter.text.split(/\s+/).every((part) => haystack.includes(part));
+}
+
+/** Manual per-session color palette: token persisted in metadata, classes
+ * applied to the row accent bar and label. */
+export const SESSION_COLORS: Array<{
+  token: string;
+  bar: string;
+  label: string;
+}> = [
+  { token: "red", bar: "bg-red-500", label: "text-red-500" },
+  { token: "orange", bar: "bg-orange-500", label: "text-orange-500" },
+  { token: "amber", bar: "bg-amber-500", label: "text-amber-500" },
+  { token: "emerald", bar: "bg-emerald-500", label: "text-emerald-500" },
+  { token: "sky", bar: "bg-sky-500", label: "text-sky-500" },
+  { token: "violet", bar: "bg-violet-500", label: "text-violet-500" },
+  { token: "pink", bar: "bg-pink-500", label: "text-pink-500" },
+  { token: "zinc", bar: "bg-zinc-500", label: "text-zinc-400" },
+];
+
+export function colorClasses(
+  token?: string,
+): { bar: string; label: string } | null {
+  if (!token) return null;
+  return SESSION_COLORS.find((c) => c.token === token) ?? null;
 }
 
 /**

@@ -42,3 +42,35 @@ export function listSessions(force = false): Promise<AgentSession[]> {
 export function listLiveSessions(): Promise<LiveAgentSession[]> {
   return invoke<LiveAgentSession[]>("agent_live_sessions");
 }
+
+export type PreviewTurn = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type SessionRef = {
+  provider: AgentProviderId;
+  sessionId: string;
+};
+
+export function deleteSession(
+  provider: AgentProviderId,
+  sessionId: string,
+  force = false,
+): Promise<void> {
+  return invoke("agent_delete_session", { provider, sessionId, force });
+}
+
+export function previewSession(
+  provider: AgentProviderId,
+  sessionId: string,
+): Promise<PreviewTurn[]> {
+  return invoke<PreviewTurn[]>("agent_session_preview", {
+    provider,
+    sessionId,
+  });
+}
+
+export function searchSessions(query: string): Promise<SessionRef[]> {
+  return invoke<SessionRef[]>("agent_search_sessions", { query });
+}

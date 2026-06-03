@@ -4,6 +4,7 @@ import {
   watchAdd,
   watchRemove,
 } from "@/modules/explorer/lib/watch";
+import { loadAllMetadata } from "../lib/metadata";
 import { listLiveSessions, listProviders, listSessions } from "../lib/native";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 
@@ -18,8 +19,14 @@ const REFRESH_DEBOUNCE_MS = 400;
  * mtime caches keep cheap anyway). Window focus refetches through the 3s TTL.
  */
 export function useAgentSessions(home: string | null) {
-  const { setProviders, setSessions, setLoading, setError, applyLiveSessions } =
-    useAgentSessionsStore.getState();
+  const {
+    setProviders,
+    setSessions,
+    setLoading,
+    setError,
+    applyLiveSessions,
+    setAllMetadata,
+  } = useAgentSessionsStore.getState();
   const scanDebounceRef = useRef<number | null>(null);
   const liveDebounceRef = useRef<number | null>(null);
 
@@ -54,7 +61,10 @@ export function useAgentSessions(home: string | null) {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    void loadAllMetadata()
+      .then(setAllMetadata)
+      .catch(() => {});
+  }, [refresh, setAllMetadata]);
 
   useEffect(() => {
     if (!home) return;
