@@ -1,3 +1,8 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { SearchAddon } from "@xterm/addon-search";
+import { AnimatePresence, motion } from "motion/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -8,7 +13,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { getLaunchDir } from "@/lib/launchDir";
 import { quoteShellArg } from "@/lib/shellQuote";
 import { useZoom } from "@/lib/useZoom";
+import {
+  AgentSessionsPanel,
+  createAgentSessionsBridge,
+  useAgentSessionsStore,
+} from "@/modules/agent-sessions";
 import { AgentNotificationsBridge } from "@/modules/agents";
+import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
 import {
   AgentRunBridge,
   AiInputBar,
@@ -28,9 +39,9 @@ import {
   createCommandPaletteActions,
 } from "@/modules/command-palette";
 import {
+  type EditorPaneHandle,
   NewEditorDialog,
   useEditorFileSync,
-  type EditorPaneHandle,
 } from "@/modules/editor";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
@@ -42,15 +53,15 @@ import {
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import {
-  ShortcutsDialog,
-  useGlobalShortcuts,
   type ShortcutHandlers,
   type ShortcutId,
+  ShortcutsDialog,
+  useGlobalShortcuts,
 } from "@/modules/shortcuts";
 import {
-  SidebarRail,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
 import {
@@ -73,13 +84,12 @@ import {
   respawnSession,
   type TerminalPaneHandle,
   useTerminalFileDrop,
+  whenSessionReady,
+  writeToSession,
 } from "@/modules/terminal";
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import { useWorkspaceEnvStore } from "@/modules/workspace";
-import type { SearchAddon } from "@xterm/addon-search";
-import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
@@ -514,6 +524,7 @@ export default function App() {
       "shortcuts.open": () => setShortcutsOpen((v) => !v),
       "settings.open": () => void openSettingsWindow(),
       "sidebar.toggle": toggleSidebar,
+      "agentSessions.toggle": () => cycleSidebarView("agent-sessions"),
       "explorer.focus": toggleExplorerFocus,
       "view.zoomIn": zoomIn,
       "view.zoomOut": zoomOut,
@@ -536,6 +547,7 @@ export default function App() {
       togglePanelAndFocus,
       askFromSelection,
       toggleSidebar,
+      cycleSidebarView,
       toggleExplorerFocus,
       zoomIn,
       zoomOut,
@@ -646,6 +658,34 @@ export default function App() {
     openPanel();
     focusInput(null);
   }, [openPanel, focusInput]);
+
+  const agentSessionsBridge = useMemo(
+    () =>
+      createAgentSessionsBridge({
+        newAgentTab,
+        focusTab: ({ tabId, leafId }) => {
+          setActiveId(tabId);
+          focusPane(tabId, leafId);
+        },
+        whenSessionReady,
+        writeToSession,
+        getManagedBySessionId: (sessionId) => {
+          const a = useManagedAgentsStore.getState().getBySessionId(sessionId);
+          return a ? { tabId: a.tabId, leafId: a.leafId } : undefined;
+        },
+        registerManaged: (a) => useManagedAgentsStore.getState().register(a),
+        removeManaged: (leafId) =>
+          useManagedAgentsStore.getState().remove(leafId),
+        enableClaudeHooks: () => invoke("agent_enable_claude_hooks"),
+        notify: (message) => toast.info(message),
+        fallbackCwd: () => explorerRoot ?? launchCwd ?? home ?? null,
+      }),
+    [newAgentTab, setActiveId, focusPane, explorerRoot, launchCwd, home],
+  );
+
+  const activeAgentCount = useAgentSessionsStore(
+    (s) => s.sessions.filter((session) => session.isActive).length,
+  );
 
   const handleLeafExit = useCallback(
     (leafId: number, _code: number) => {
@@ -831,7 +871,7 @@ export default function App() {
                         onAttachToAgent={handleAttachFileToAgent}
                         onOpenMarkdownPreview={openMarkdownPreview}
                       />
-                    ) : (
+                    ) : sidebarView === "source-control" ? (
                       <SourceControlPanel
                         open
                         sourceControl={sourceControl}
@@ -839,12 +879,19 @@ export default function App() {
                         onOpenGitGraph={openGitGraphFromContext}
                         onOpenFile={handleOpenFile}
                       />
+                    ) : (
+                      <AgentSessionsPanel
+                        bridge={agentSessionsBridge}
+                        home={home}
+                        workspaceCwd={explorerRoot ?? launchCwd ?? home}
+                      />
                     )}
                   </div>
                   <SidebarRail
                     activeView={sidebarView}
                     onSelectView={persistSidebarView}
                     changedCount={sourceControl.changedCount}
+                    activeAgentCount={activeAgentCount}
                   />
                 </div>
               </ResizablePanel>

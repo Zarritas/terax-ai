@@ -1,6 +1,10 @@
-import { cn } from "@/lib/utils";
-import { FolderGitTwoIcon, FolderTreeIcon } from "@hugeicons/core-free-icons";
+import {
+  AiBrain01Icon,
+  FolderGitTwoIcon,
+  FolderTreeIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { cn } from "@/lib/utils";
 import type { SidebarViewId } from "./types";
 
 export const SIDEBAR_RAIL_HEIGHT = 36;
@@ -16,9 +20,16 @@ type Props = {
   activeView: SidebarViewId;
   onSelectView: (view: SidebarViewId) => void;
   changedCount: number;
+  /** Running agent sessions (live registry); shown as the Agents badge. */
+  activeAgentCount: number;
 };
 
-export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
+export function SidebarRail({
+  activeView,
+  onSelectView,
+  changedCount,
+  activeAgentCount,
+}: Props) {
   const items: RailItem[] = [
     { id: "explorer", label: "Files", icon: FolderTreeIcon },
     {
@@ -26,6 +37,12 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
       label: "Source Control",
       icon: FolderGitTwoIcon,
       badge: changedCount,
+    },
+    {
+      id: "agent-sessions",
+      label: "Agents",
+      icon: AiBrain01Icon,
+      badge: activeAgentCount,
     },
   ];
 
