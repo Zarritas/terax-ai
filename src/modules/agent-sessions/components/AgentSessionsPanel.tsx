@@ -5,7 +5,8 @@ import {
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +17,14 @@ import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentSessions } from "../hooks/useAgentSessions";
+import {
+  allKnownTags,
+  deleteMetadata,
+  parseTagList,
+  setMetadata,
+} from "../lib/metadata";
 import type { AgentProviderId, AgentSession } from "../lib/native";
+import { deleteSession } from "../lib/native";
 import {
   groupByProviderThenProject,
   matchesFilter,
@@ -24,7 +32,8 @@ import {
 } from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
-import { SessionRow } from "./SessionRow";
+import { type DialogState, SessionDialogs } from "./SessionDialogs";
+import { type RowAction, SessionRow } from "./SessionRow";
 
 const PROVIDER_LABEL: Record<AgentProviderId, string> = {
   claude: "Claude Code",
@@ -59,6 +68,64 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const toggleCollapsed = useAgentSessionsStore((s) => s.toggleCollapsed);
 
   const metadata = useAgentSessionsStore((s) => s.metadata);
+  const updateMetadata = useAgentSessionsStore((s) => s.updateMetadata);
+  const [dialog, setDialog] = useState<DialogState>(null);
+
+  const persistMeta = useCallback(
+    (session: AgentSession, patch: Parameters<typeof setMetadata>[2]) => {
+      void setMetadata(session.provider, session.id, patch)
+        .then((next) => updateMetadata(session.provider, session.id, next))
+        .catch(() => toast.error("Could not save session metadata"));
+    },
+    [updateMetadata],
+  );
+
+  const handleDelete = useCallback(
+    (session: AgentSession, force: boolean) => {
+      deleteSession(session.provider, session.id, force)
+        .then(() => {
+          void deleteMetadata(session.provider, session.id).catch(() => {});
+          updateMetadata(session.provider, session.id, null);
+          toast.success(
+            session.provider === "codex"
+              ? "Session archived"
+              : "Session deleted",
+          );
+          void refresh(true);
+        })
+        .catch((err) => {
+          if (String(err).includes("ACTIVE")) {
+            setDialog({ kind: "force-delete", session });
+          } else {
+            toast.error(String(err));
+          }
+        });
+    },
+    [updateMetadata, refresh],
+  );
+
+  const handleRowAction = useCallback(
+    (session: AgentSession, action: RowAction) => {
+      switch (action.kind) {
+        case "rename":
+          setDialog({ kind: "rename", session });
+          break;
+        case "tags":
+          setDialog({ kind: "tags", session });
+          break;
+        case "color":
+          persistMeta(session, { color: action.token ?? undefined });
+          break;
+        case "preview":
+          // Wired in the preview commit.
+          break;
+        case "delete":
+          setDialog({ kind: "delete", session });
+          break;
+      }
+    },
+    [persistMeta],
+  );
 
   const providerGroups = useMemo(() => {
     const parsed = parseFilter(filter);
@@ -208,7 +275,13 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                                 <SessionRow
                                   key={`${session.provider}:${session.id}`}
                                   session={session}
+                                  meta={
+                                    metadata[
+                                      `${session.provider}:${session.id}`
+                                    ]
+                                  }
                                   onResume={bridge.resumeSession}
+                                  onAction={handleRowAction}
                                 />
                               ))
                             : null}
@@ -220,6 +293,19 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
             );
           })}
         </div>
+        <SessionDialogs
+          dialog={dialog}
+          metadata={metadata}
+          knownTags={allKnownTags(metadata)}
+          onClose={() => setDialog(null)}
+          onRename={(session, name) =>
+            persistMeta(session, { name: name.trim() || undefined })
+          }
+          onTags={(session, raw) =>
+            persistMeta(session, { tags: parseTagList(raw) })
+          }
+          onDelete={handleDelete}
+        />
       </div>
     </TooltipProvider>
   );
