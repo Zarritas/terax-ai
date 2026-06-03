@@ -2,10 +2,11 @@ import {
   Add01Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
+  CleanIcon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -24,7 +25,7 @@ import {
   setMetadata,
 } from "../lib/metadata";
 import type { AgentProviderId, AgentSession } from "../lib/native";
-import { deleteSession } from "../lib/native";
+import { deleteSession, previewSession, searchSessions } from "../lib/native";
 import {
   groupByProviderThenProject,
   matchesFilter,
@@ -32,7 +33,12 @@ import {
 } from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
+import { CleanupDialog } from "./CleanupDialog";
 import { type DialogState, SessionDialogs } from "./SessionDialogs";
+import {
+  type PreviewState,
+  SessionPreviewDialog,
+} from "./SessionPreviewDialog";
 import { type RowAction, SessionRow } from "./SessionRow";
 
 const PROVIDER_LABEL: Record<AgentProviderId, string> = {
@@ -69,7 +75,76 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
 
   const metadata = useAgentSessionsStore((s) => s.metadata);
   const updateMetadata = useAgentSessionsStore((s) => s.updateMetadata);
+  const searchIds = useAgentSessionsStore((s) => s.searchIds);
+  const setSearchIds = useAgentSessionsStore((s) => s.setSearchIds);
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [preview, setPreview] = useState<PreviewState>(null);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+
+  const contentQuery = useMemo(() => parseFilter(filter).content, [filter]);
+
+  // content: terms resolve against the FTS index, debounced; the result set
+  // intersects with the structured/free-text filtering below.
+  useEffect(() => {
+    if (!contentQuery) {
+      setSearchIds(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      searchSessions(contentQuery)
+        .then((refs) =>
+          setSearchIds(
+            new Set(refs.map((r) => `${r.provider}:${r.sessionId}`)),
+          ),
+        )
+        .catch(() => setSearchIds(new Set()));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [contentQuery, setSearchIds]);
+
+  const openPreview = useCallback((session: AgentSession) => {
+    setPreview({ session, turns: null, error: null });
+    previewSession(session.provider, session.id)
+      .then((turns) =>
+        setPreview((current) =>
+          current?.session.id === session.id
+            ? { session, turns, error: null }
+            : current,
+        ),
+      )
+      .catch((err) =>
+        setPreview((current) =>
+          current?.session.id === session.id
+            ? { session, turns: [], error: String(err) }
+            : current,
+        ),
+      );
+  }, []);
+
+  const handleCleanup = useCallback(
+    (targets: AgentSession[]) => {
+      void (async () => {
+        let deleted = 0;
+        let failed = 0;
+        for (const session of targets) {
+          try {
+            await deleteSession(session.provider, session.id, false);
+            await deleteMetadata(session.provider, session.id).catch(() => {});
+            updateMetadata(session.provider, session.id, null);
+            deleted += 1;
+          } catch {
+            failed += 1;
+          }
+        }
+        toast[failed ? "warning" : "success"](
+          `Removed ${deleted} session(s)` +
+            (failed ? `, ${failed} failed` : ""),
+        );
+        void refresh(true);
+      })();
+    },
+    [updateMetadata, refresh],
+  );
 
   const persistMeta = useCallback(
     (session: AgentSession, patch: Parameters<typeof setMetadata>[2]) => {
@@ -117,23 +192,25 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           persistMeta(session, { color: action.token ?? undefined });
           break;
         case "preview":
-          // Wired in the preview commit.
+          openPreview(session);
           break;
         case "delete":
           setDialog({ kind: "delete", session });
           break;
       }
     },
-    [persistMeta],
+    [persistMeta, openPreview],
   );
 
   const providerGroups = useMemo(() => {
     const parsed = parseFilter(filter);
-    const visible = sessions.filter((s: AgentSession) =>
-      matchesFilter(s, parsed, metadata[`${s.provider}:${s.id}`]),
+    const visible = sessions.filter(
+      (s: AgentSession) =>
+        (searchIds === null || searchIds.has(`${s.provider}:${s.id}`)) &&
+        matchesFilter(s, parsed, metadata[`${s.provider}:${s.id}`]),
     );
     return groupByProviderThenProject(visible);
-  }, [sessions, filter, metadata]);
+  }, [sessions, filter, metadata, searchIds]);
 
   const startable = providers.filter((p) => p.binaryFound);
   const activeCount = sessions.filter((s) => s.isActive).length;
@@ -175,6 +252,14 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
             </DropdownMenu>
             <button
               type="button"
+              aria-label="Clean up old sessions"
+              onClick={() => setCleanupOpen(true)}
+              className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+            >
+              <HugeiconsIcon icon={CleanIcon} size={13} />
+            </button>
+            <button
+              type="button"
               aria-label="Refresh sessions"
               onClick={() => void refresh(true)}
               className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
@@ -192,7 +277,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           <Input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter sessions…"
+            placeholder="Filter…  (tag: branch: id: path: content:)"
             className="h-7 text-[12px]"
           />
         </div>
@@ -293,6 +378,17 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
             );
           })}
         </div>
+        <SessionPreviewDialog
+          preview={preview}
+          metadata={metadata}
+          onClose={() => setPreview(null)}
+        />
+        <CleanupDialog
+          open={cleanupOpen}
+          sessions={sessions}
+          onClose={() => setCleanupOpen(false)}
+          onConfirm={handleCleanup}
+        />
         <SessionDialogs
           dialog={dialog}
           metadata={metadata}
