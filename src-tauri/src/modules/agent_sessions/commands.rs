@@ -235,6 +235,13 @@ mod tests {
         fn resume_argv(&self, session_id: &str) -> Vec<String> {
             vec!["fake".to_string(), session_id.to_string()]
         }
+        fn delete_session(
+            &self,
+            _session_id: &str,
+            _force: bool,
+        ) -> Result<(), crate::modules::agent_sessions::types::DeleteError> {
+            Ok(())
+        }
     }
 
     fn fake_state(scans: &Arc<AtomicUsize>) -> AgentSessionsState {

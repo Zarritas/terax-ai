@@ -3,7 +3,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession, PreviewTurn};
+use crate::modules::agent_sessions::types::{
+    AgentSession, DeleteError, LiveAgentSession, PreviewTurn,
+};
 
 /// One coding-agent CLI whose on-disk sessions we know how to read.
 ///
@@ -41,6 +43,11 @@ pub trait AgentProvider: Send + Sync {
     fn fts_content(&self, _session_id: &str) -> Option<String> {
         None
     }
+    /// Delete every on-disk artefact for `session_id`. Idempotent: an
+    /// already-absent session is success. `force` bypasses the live-session
+    /// guard (only claude keeps a live registry). Deliberately has no default
+    /// so every provider spells out its destructive flow.
+    fn delete_session(&self, session_id: &str, force: bool) -> Result<(), DeleteError>;
     /// Drop any internal result caches so the next scan is fully fresh.
     /// Called on user-initiated refresh; mtime-keyed file caches don't need
     /// it (they self-invalidate), so the default is a no-op.

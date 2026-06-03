@@ -17,7 +17,9 @@ use serde_json::Value;
 use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, truncate_title};
 use crate::modules::agent_sessions::live;
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession, PreviewTurn};
+use crate::modules::agent_sessions::types::{
+    AgentSession, DeleteError, LiveAgentSession, PreviewTurn,
+};
 
 const HEADER_SCAN_LINES: usize = 80;
 const PROMPT_MAX_CHARS: usize = 120;
@@ -150,6 +152,34 @@ impl AgentProvider for ClaudeProvider {
     fn fts_content(&self, session_id: &str) -> Option<String> {
         let path = self.locate(session_id)?;
         extract::fts_text(&path, claude_turn)
+    }
+
+    /// Port of multi-claude's delete_session: jsonl + `<id>/` subagents
+    /// subdir + `session-env/<id>`, guarded against live sessions.
+    fn delete_session(&self, session_id: &str, force: bool) -> Result<(), DeleteError> {
+        if !force
+            && self
+                .live_sessions()
+                .iter()
+                .any(|l| l.session_id == session_id)
+        {
+            return Err(DeleteError::Active);
+        }
+        if let Some(jsonl) = self.locate(session_id) {
+            std::fs::remove_file(&jsonl).map_err(|e| DeleteError::Io(e.to_string()))?;
+            let subdir = jsonl.with_extension("");
+            if subdir.is_dir() {
+                std::fs::remove_dir_all(&subdir).map_err(|e| DeleteError::Io(e.to_string()))?;
+            }
+        }
+        let env_path = self.home.join("session-env").join(session_id);
+        if env_path.is_dir() {
+            std::fs::remove_dir_all(&env_path).map_err(|e| DeleteError::Io(e.to_string()))?;
+        } else if env_path.exists() {
+            std::fs::remove_file(&env_path).map_err(|e| DeleteError::Io(e.to_string()))?;
+        }
+        self.cache.retain_existing();
+        Ok(())
     }
 }
 
@@ -547,6 +577,51 @@ mod tests {
         let p = ClaudeProvider::new();
         assert_eq!(p.resume_argv("xyz"), vec!["claude", "--resume", "xyz"]);
         assert_eq!(p.new_session_argv(), vec!["claude"]);
+    }
+
+    #[test]
+    fn delete_removes_jsonl_subdir_and_session_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".claude");
+        let project = home.join("projects").join(encode_cwd("/work/p"));
+        let jsonl = write_session(&project, "sid-del", &[&user_event("/work/p", "x")]);
+        std::fs::create_dir_all(project.join("sid-del")).unwrap();
+        std::fs::write(project.join("sid-del/agent.jsonl"), "{}").unwrap();
+        let env_dir = home.join("session-env");
+        std::fs::create_dir_all(&env_dir).unwrap();
+        std::fs::write(env_dir.join("sid-del"), "VAR=1").unwrap();
+
+        let provider = ClaudeProvider::with_home(home.clone());
+        provider.delete_session("sid-del", false).unwrap();
+        assert!(!jsonl.exists());
+        assert!(!project.join("sid-del").exists());
+        assert!(!env_dir.join("sid-del").exists());
+        // Idempotent on repeat.
+        provider.delete_session("sid-del", false).unwrap();
+    }
+
+    #[test]
+    fn delete_blocks_live_sessions_unless_forced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".claude");
+        let project = home.join("projects").join(encode_cwd("/work/p"));
+        write_session(&project, "sid-live", &[&user_event("/work/p", "x")]);
+        let registry = home.join("sessions");
+        std::fs::create_dir_all(&registry).unwrap();
+        let pid = std::process::id();
+        std::fs::write(
+            registry.join(format!("{pid}.json")),
+            format!("{{\"pid\":{pid},\"sessionId\":\"sid-live\"}}"),
+        )
+        .unwrap();
+
+        let provider = ClaudeProvider::with_home(home);
+        assert_eq!(
+            provider.delete_session("sid-live", false),
+            Err(DeleteError::Active)
+        );
+        provider.delete_session("sid-live", true).unwrap();
+        assert!(provider.locate("sid-live").is_none());
     }
 
     #[test]

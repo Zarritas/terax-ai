@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::modules::agent_sessions::extract;
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::types::{AgentSession, PreviewTurn};
+use crate::modules::agent_sessions::types::{AgentSession, DeleteError, PreviewTurn};
 
 pub struct GeminiProvider {
     home: PathBuf,
@@ -144,6 +144,15 @@ impl AgentProvider for GeminiProvider {
     fn fts_content(&self, session_id: &str) -> Option<String> {
         let path = self.locate(session_id)?;
         extract::fts_text(&path, gemini_turn)
+    }
+
+    fn delete_session(&self, session_id: &str, _force: bool) -> Result<(), DeleteError> {
+        let Some(path) = self.locate(session_id) else {
+            return Ok(()); // already gone
+        };
+        std::fs::remove_file(&path).map_err(|e| DeleteError::Io(e.to_string()))?;
+        self.cache.retain_existing();
+        Ok(())
     }
 }
 
@@ -308,6 +317,15 @@ mod tests {
     fn resume_argv_shape() {
         let p = GeminiProvider::new();
         assert_eq!(p.resume_argv("u1"), vec!["gemini", "--resume", "u1"]);
+    }
+
+    #[test]
+    fn delete_unlinks_the_chat_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = GeminiProvider::with_home(setup_home(tmp.path()));
+        provider.delete_session("uuid-1234", false).unwrap();
+        assert!(provider.locate("uuid-1234").is_none());
+        provider.delete_session("uuid-1234", false).unwrap(); // idempotent
     }
 
     #[test]

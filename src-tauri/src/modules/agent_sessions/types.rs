@@ -54,3 +54,25 @@ pub struct PreviewTurn {
     pub role: String,
     pub text: String,
 }
+
+/// Failure modes of a session deletion, mapped to user-facing strings by the
+/// command layer. `Active` carries a stable marker the frontend detects to
+/// offer a force-confirmation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeleteError {
+    /// The provider's live registry reports the session as running.
+    Active,
+    Io(String),
+    /// The provider's own CLI failed to delete (opencode).
+    Subprocess(String),
+}
+
+impl DeleteError {
+    pub fn to_user_string(&self) -> String {
+        match self {
+            DeleteError::Active => "ACTIVE".to_string(),
+            DeleteError::Io(e) => format!("delete failed: {e}"),
+            DeleteError::Subprocess(e) => format!("provider CLI failed: {e}"),
+        }
+    }
+}

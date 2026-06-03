@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::modules::agent_sessions::provider::{binary_in_path, AgentProvider};
-use crate::modules::agent_sessions::types::AgentSession;
+use crate::modules::agent_sessions::types::{AgentSession, DeleteError};
 use crate::modules::proc::hide_console;
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -151,6 +151,18 @@ impl AgentProvider for OpencodeProvider {
         if let Ok(mut cache) = self.cache.lock() {
             *cache = None;
         }
+    }
+
+    /// OpenCode owns its storage (SQLite); deletion goes through its CLI.
+    fn delete_session(&self, session_id: &str, _force: bool) -> Result<(), DeleteError> {
+        run_with_timeout(
+            self.binary(),
+            &["session", "delete", session_id],
+            LIST_TIMEOUT,
+        )
+        .map_err(DeleteError::Subprocess)?;
+        self.invalidate_caches();
+        Ok(())
     }
 }
 

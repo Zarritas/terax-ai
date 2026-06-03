@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, truncate_title};
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::types::{AgentSession, PreviewTurn};
+use crate::modules::agent_sessions::types::{AgentSession, DeleteError, PreviewTurn};
 
 const HEADER_SCAN_LINES: usize = 40;
 
@@ -127,6 +127,31 @@ impl AgentProvider for CodexProvider {
     fn fts_content(&self, session_id: &str) -> Option<String> {
         let path = self.locate(session_id)?;
         extract::fts_text(&path, codex_turn)
+    }
+
+    /// Codex "delete" archives: the rollout moves to archived_sessions/
+    /// preserving its YYYY/MM/DD subpath, matching codex's own flow and
+    /// keeping the session recoverable (`codex unarchive`).
+    fn delete_session(&self, session_id: &str, _force: bool) -> Result<(), DeleteError> {
+        let Some(rollout) = self.locate(session_id) else {
+            return Ok(()); // already gone/archived
+        };
+        let relative = rollout
+            .strip_prefix(self.sessions_dir())
+            .map_err(|e| DeleteError::Io(e.to_string()))?
+            .to_path_buf();
+        let target = self.home.join("archived_sessions").join(&relative);
+        if target.exists() {
+            // Same rollout already archived: drop the live copy.
+            std::fs::remove_file(&rollout).map_err(|e| DeleteError::Io(e.to_string()))?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| DeleteError::Io(e.to_string()))?;
+            }
+            std::fs::rename(&rollout, &target).map_err(|e| DeleteError::Io(e.to_string()))?;
+        }
+        self.cache.retain_existing();
+        Ok(())
     }
 }
 
@@ -371,6 +396,21 @@ mod tests {
     fn resume_argv_shape() {
         let p = CodexProvider::new();
         assert_eq!(p.resume_argv("abc"), vec!["codex", "resume", "abc"]);
+    }
+
+    #[test]
+    fn delete_archives_preserving_date_subpath() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_rollout(tmp.path(), "0199-arch", None);
+        let provider = CodexProvider::with_home(tmp.path().to_path_buf());
+        provider.delete_session("0199-arch", false).unwrap();
+        let archived = tmp
+            .path()
+            .join("archived_sessions/2026/06/03/rollout-2026-06-03T10-00-00-0199-arch.jsonl");
+        assert!(archived.exists());
+        assert!(provider.locate("0199-arch").is_none());
+        // Idempotent: nothing left to archive.
+        provider.delete_session("0199-arch", false).unwrap();
     }
 
     #[test]
