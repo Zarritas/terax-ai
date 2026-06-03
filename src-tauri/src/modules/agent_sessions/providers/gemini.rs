@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::modules::agent_sessions::extract;
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::types::AgentSession;
+use crate::modules::agent_sessions::types::{AgentSession, PreviewTurn};
 
 pub struct GeminiProvider {
     home: PathBuf,
@@ -109,6 +110,84 @@ impl AgentProvider for GeminiProvider {
             "--resume".to_string(),
             session_id.to_string(),
         ]
+    }
+
+    fn locate(&self, session_id: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(self.tmp_dir()).ok()?;
+        for entry in entries.flatten() {
+            let chats = entry.path().join("chats");
+            let Ok(chat_files) = std::fs::read_dir(&chats) else {
+                continue;
+            };
+            for chat in chat_files.flatten() {
+                let path = chat.path();
+                let name = chat.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("session-") || !name.ends_with(".jsonl") {
+                    continue;
+                }
+                if chat_session_id(&path).as_deref() == Some(session_id) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    fn preview(&self, session_id: &str) -> Result<Vec<PreviewTurn>, String> {
+        let path = self
+            .locate(session_id)
+            .ok_or_else(|| "session not found".to_string())?;
+        Ok(extract::preview_turns(&path, gemini_turn))
+    }
+
+    fn fts_content(&self, session_id: &str) -> Option<String> {
+        let path = self.locate(session_id)?;
+        extract::fts_text(&path, gemini_turn)
+    }
+}
+
+fn chat_session_id(chat_file: &Path) -> Option<String> {
+    let file = File::open(chat_file).ok()?;
+    let first = BufReader::new(file).lines().next()?.ok()?;
+    let head = serde_json::from_str::<Value>(&first).ok()?;
+    head.get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Defensive extractor for Gemini's MessageRecord lines: accepts
+/// `{role|type, content}` with content as string or `{text}` blocks; lines
+/// without a recognizable role/content yield nothing (never an error).
+pub(crate) fn gemini_turn(event: &Value) -> Option<(&'static str, String)> {
+    if event.get("sessionId").is_some() {
+        return None; // metadata head line
+    }
+    let role_raw = event
+        .get("role")
+        .or_else(|| event.get("type"))
+        .and_then(Value::as_str)?;
+    let role = match role_raw {
+        "user" => "user",
+        "assistant" | "model" | "gemini" => "assistant",
+        _ => return None,
+    };
+    let content = event.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some((role, text.to_string()));
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(blocks) = content.as_array() {
+        for block in blocks {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                parts.push(text);
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some((role, parts.join("\n")))
     }
 }
 
@@ -229,5 +308,25 @@ mod tests {
     fn resume_argv_shape() {
         let p = GeminiProvider::new();
         assert_eq!(p.resume_argv("u1"), vec!["gemini", "--resume", "u1"]);
+    }
+
+    #[test]
+    fn preview_is_defensive_about_record_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = setup_home(tmp.path());
+        std::fs::write(
+            home.join("tmp/proj-a/chats/session-2026-06-03-abcd.jsonl"),
+            "{\"sessionId\":\"uuid-1234\",\"projectHash\":\"proj-a\"}\n\
+             {\"role\":\"user\",\"content\":\"hola gemini\"}\n\
+             {\"type\":\"model\",\"content\":[{\"text\":\"respuesta\"}]}\n\
+             {\"thoughts\":\"sin role ni type\"}\n",
+        )
+        .unwrap();
+        let provider = GeminiProvider::with_home(home);
+        assert!(provider.locate("uuid-1234").is_some());
+        let turns = provider.preview("uuid-1234").unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].text, "hola gemini");
+        assert_eq!(turns[1].role, "assistant");
     }
 }

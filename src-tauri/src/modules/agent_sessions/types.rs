@@ -46,3 +46,11 @@ pub struct LiveAgentSession {
     pub session_id: String,
     pub pid: u32,
 }
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTurn {
+    /// "user" | "assistant"
+    pub role: String,
+    pub text: String,
+}

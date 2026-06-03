@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, truncate_title};
 use crate::modules::agent_sessions::live;
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession};
+use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession, PreviewTurn};
 
 const HEADER_SCAN_LINES: usize = 80;
 const PROMPT_MAX_CHARS: usize = 120;
@@ -125,6 +126,57 @@ impl AgentProvider for ClaudeProvider {
             "--resume".to_string(),
             session_id.to_string(),
         ]
+    }
+
+    fn locate(&self, session_id: &str) -> Option<PathBuf> {
+        let target = format!("{session_id}.jsonl");
+        let entries = std::fs::read_dir(self.projects_dir()).ok()?;
+        for entry in entries.flatten() {
+            let candidate = entry.path().join(&target);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn preview(&self, session_id: &str) -> Result<Vec<PreviewTurn>, String> {
+        let path = self
+            .locate(session_id)
+            .ok_or_else(|| "session not found".to_string())?;
+        Ok(extract::preview_turns(&path, claude_turn))
+    }
+
+    fn fts_content(&self, session_id: &str) -> Option<String> {
+        let path = self.locate(session_id)?;
+        extract::fts_text(&path, claude_turn)
+    }
+}
+
+/// Per-event extractor: user/assistant turns from `message.content`
+/// (plain string or text blocks; tool payloads are skipped).
+pub(crate) fn claude_turn(event: &Value) -> Option<(&'static str, String)> {
+    let role = match event.get("type").and_then(Value::as_str)? {
+        "user" => "user",
+        "assistant" => "assistant",
+        _ => return None,
+    };
+    let content = event.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some((role, text.to_string()));
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for block in content.as_array()? {
+        if block.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                parts.push(text);
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some((role, parts.join("\n")))
     }
 }
 
@@ -249,7 +301,10 @@ fn parse_session_header(jsonl: &Path) -> SessionHeader {
         }
         if header.first_prompt.is_none() {
             if let Some(prompt) = extract_user_prompt(&event) {
-                header.first_prompt = Some(truncate(&strip_command_wrappers(&prompt)));
+                header.first_prompt = Some(truncate_title(
+                    &strip_command_wrappers(&prompt),
+                    PROMPT_MAX_CHARS,
+                ));
             }
         }
         if header.first_prompt.is_some()
@@ -350,64 +405,6 @@ fn parse_rename_stdout(content: &str) -> Option<String> {
     }
 }
 
-/// Convert slash-command wrappers into a human-friendly summary:
-/// `<command-name>/x</command-name><command-args>y</command-args>` → `/x y`.
-/// Plain prompts pass through with inline `<tag>...</tag>` blocks stripped.
-pub fn strip_command_wrappers(text: &str) -> String {
-    if let Some(name) = extract_tag(text, "command-name") {
-        let args = extract_tag(text, "command-args").unwrap_or_default();
-        return format!("{} {}", name.trim(), args.trim())
-            .trim()
-            .to_string();
-    }
-    strip_inline_tags(text).trim().to_string()
-}
-
-fn extract_tag(text: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = text.find(&open)? + open.len();
-    let end = text[start..].find(&close)? + start;
-    Some(text[start..end].to_string())
-}
-
-/// Remove every `<tag>...</tag>` block (non-nested, like the Python regex).
-fn strip_inline_tags(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open_at) = rest.find('<') {
-        let Some(name_end) = rest[open_at..].find('>') else {
-            break;
-        };
-        let tag_name = &rest[open_at + 1..open_at + name_end];
-        if tag_name.is_empty() || tag_name.starts_with('/') || tag_name.contains('<') {
-            out.push_str(&rest[..open_at + 1]);
-            rest = &rest[open_at + 1..];
-            continue;
-        }
-        let close = format!("</{tag_name}>");
-        let Some(close_at) = rest[open_at..].find(&close) else {
-            out.push_str(&rest[..open_at + 1]);
-            rest = &rest[open_at + 1..];
-            continue;
-        };
-        out.push_str(&rest[..open_at]);
-        rest = &rest[open_at + close_at + close.len()..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Collapse whitespace and cap at PROMPT_MAX_CHARS (char-safe, with ellipsis).
-pub fn truncate(text: &str) -> String {
-    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= PROMPT_MAX_CHARS {
-        return collapsed;
-    }
-    let cut: String = collapsed.chars().take(PROMPT_MAX_CHARS - 1).collect();
-    format!("{}…", cut.trim_end())
-}
-
 /// Streaming newline count, 64 KB chunks, no full file in memory.
 pub fn count_lines(path: &Path) -> Option<u64> {
     let mut file = File::open(path).ok()?;
@@ -451,32 +448,6 @@ mod tests {
     fn encode_cwd_replaces_non_alphanumerics() {
         assert_eq!(encode_cwd("/home/me/WS/repo"), "-home-me-WS-repo");
         assert_eq!(encode_cwd("/a/b.c_d"), "-a-b-c-d");
-    }
-
-    #[test]
-    fn strip_command_wrappers_summarizes_slash_commands() {
-        let text = "<command-message>refine</command-message>\
-                    <command-name>/refine-task</command-name>\
-                    <command-args>https://x</command-args>";
-        assert_eq!(strip_command_wrappers(text), "/refine-task https://x");
-    }
-
-    #[test]
-    fn strip_command_wrappers_passes_plain_text_and_strips_tags() {
-        assert_eq!(strip_command_wrappers("hola mundo"), "hola mundo");
-        assert_eq!(
-            strip_command_wrappers("antes <system-hint>x</system-hint> después"),
-            "antes  después"
-        );
-    }
-
-    #[test]
-    fn truncate_collapses_whitespace_and_caps() {
-        assert_eq!(truncate("a  b\n\nc"), "a b c");
-        let long = "x".repeat(300);
-        let out = truncate(&long);
-        assert_eq!(out.chars().count(), PROMPT_MAX_CHARS);
-        assert!(out.ends_with('…'));
     }
 
     #[test]
@@ -576,5 +547,29 @@ mod tests {
         let p = ClaudeProvider::new();
         assert_eq!(p.resume_argv("xyz"), vec!["claude", "--resume", "xyz"]);
         assert_eq!(p.new_session_argv(), vec!["claude"]);
+    }
+
+    #[test]
+    fn locate_and_preview_read_the_session_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".claude");
+        let project = home.join("projects").join(encode_cwd("/work/p"));
+        write_session(
+            &project,
+            "sid-prev",
+            &[
+                &user_event("/work/p", "pregunta inicial"),
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"respuesta\"}]}}",
+            ],
+        );
+        let provider = ClaudeProvider::with_home(home);
+        assert!(provider.locate("sid-prev").is_some());
+        assert!(provider.locate("missing").is_none());
+        let turns = provider.preview("sid-prev").unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].role, "user");
+        assert_eq!(turns[1].text, "respuesta");
+        let fts = provider.fts_content("sid-prev").unwrap();
+        assert!(fts.contains("pregunta inicial") && fts.contains("respuesta"));
     }
 }

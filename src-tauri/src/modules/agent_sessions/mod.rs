@@ -5,6 +5,7 @@
 // never accept paths from the frontend.
 
 pub mod commands;
+pub mod extract;
 pub mod live;
 pub mod provider;
 pub mod providers;

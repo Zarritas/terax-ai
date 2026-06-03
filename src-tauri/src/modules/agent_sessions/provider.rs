@@ -3,7 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession};
+use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession, PreviewTurn};
 
 /// One coding-agent CLI whose on-disk sessions we know how to read.
 ///
@@ -25,6 +25,22 @@ pub trait AgentProvider: Send + Sync {
     }
     /// Argv to resume `session_id` (e.g. `["claude", "--resume", id]`).
     fn resume_argv(&self, session_id: &str) -> Vec<String>;
+    /// Absolute path of the on-disk artefact backing `session_id`, if this
+    /// provider stores one. None for providers without per-session files
+    /// (opencode) or when the session isn't found.
+    fn locate(&self, _session_id: &str) -> Option<PathBuf> {
+        None
+    }
+    /// Last conversation turns for a preview. Err("unsupported") for
+    /// providers whose content isn't readable from disk (opencode).
+    fn preview(&self, _session_id: &str) -> Result<Vec<PreviewTurn>, String> {
+        Err("unsupported".to_string())
+    }
+    /// Concatenated user+assistant text for the FTS index, capped. None when
+    /// unsupported or the session can't be found.
+    fn fts_content(&self, _session_id: &str) -> Option<String> {
+        None
+    }
     /// Drop any internal result caches so the next scan is fully fresh.
     /// Called on user-initiated refresh; mtime-keyed file caches don't need
     /// it (they self-invalidate), so the default is a no-op.

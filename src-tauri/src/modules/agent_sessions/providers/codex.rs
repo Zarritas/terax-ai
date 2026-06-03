@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, truncate_title};
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::providers::claude::{strip_command_wrappers, truncate};
-use crate::modules::agent_sessions::types::AgentSession;
+use crate::modules::agent_sessions::types::{AgentSession, PreviewTurn};
 
 const HEADER_SCAN_LINES: usize = 40;
 
@@ -100,6 +100,61 @@ impl AgentProvider for CodexProvider {
             session_id.to_string(),
         ]
     }
+
+    fn locate(&self, session_id: &str) -> Option<PathBuf> {
+        // The rollout filename ends with the session uuid; prefilter by name
+        // and confirm against the session_meta payload defensively.
+        let suffix = format!("{session_id}.jsonl");
+        for rollout in collect_rollouts(&self.sessions_dir()) {
+            let name = rollout.file_name()?.to_string_lossy().into_owned();
+            if !name.ends_with(&suffix) {
+                continue;
+            }
+            if rollout_id(&rollout).as_deref() == Some(session_id) {
+                return Some(rollout);
+            }
+        }
+        None
+    }
+
+    fn preview(&self, session_id: &str) -> Result<Vec<PreviewTurn>, String> {
+        let path = self
+            .locate(session_id)
+            .ok_or_else(|| "session not found".to_string())?;
+        Ok(extract::preview_turns(&path, codex_turn))
+    }
+
+    fn fts_content(&self, session_id: &str) -> Option<String> {
+        let path = self.locate(session_id)?;
+        extract::fts_text(&path, codex_turn)
+    }
+}
+
+/// Session id from a rollout's session_meta head line.
+fn rollout_id(rollout: &Path) -> Option<String> {
+    let file = File::open(rollout).ok()?;
+    let first = BufReader::new(file).lines().next()?.ok()?;
+    let head = serde_json::from_str::<Value>(&first).ok()?;
+    head.get("payload")?
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Per-event extractor: `event_msg` user_message/agent_message carry plain
+/// `message` strings (verified on real rollouts, both directions).
+pub(crate) fn codex_turn(event: &Value) -> Option<(&'static str, String)> {
+    if event.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = event.get("payload")?;
+    let role = match payload.get("type").and_then(Value::as_str)? {
+        "user_message" => "user",
+        "agent_message" => "assistant",
+        _ => return None,
+    };
+    let message = payload.get("message").and_then(Value::as_str)?;
+    Some((role, message.to_string()))
 }
 
 /// Walk `sessions/YYYY/MM/DD/` collecting `rollout-*.jsonl` files. The layout
@@ -198,7 +253,7 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
             continue;
         }
         if let Some(message) = payload.get("message").and_then(Value::as_str) {
-            first_prompt = Some(truncate(&strip_command_wrappers(message)));
+            first_prompt = Some(truncate_title(&strip_command_wrappers(message), 120));
             break;
         }
     }
@@ -316,5 +371,26 @@ mod tests {
     fn resume_argv_shape() {
         let p = CodexProvider::new();
         assert_eq!(p.resume_argv("abc"), vec!["codex", "resume", "abc"]);
+    }
+
+    #[test]
+    fn locate_and_preview_both_directions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let day = tmp.path().join("sessions/2026/06/03");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-06-03T10-00-00-0199-pppp.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"0199-pppp\",\"cwd\":\"/w\"}}\n\
+             {\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"hola\"}}\n\
+             {\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"respuesta codex\"}}\n",
+        )
+        .unwrap();
+        let provider = CodexProvider::with_home(tmp.path().to_path_buf());
+        assert!(provider.locate("0199-pppp").is_some());
+        let turns = provider.preview("0199-pppp").unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[1].role, "assistant");
+        assert_eq!(turns[1].text, "respuesta codex");
+        assert!(provider.fts_content("0199-pppp").unwrap().contains("hola"));
     }
 }
