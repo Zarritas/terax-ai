@@ -19,11 +19,23 @@ use crate::modules::agent_sessions::types::AgentSession;
 use crate::modules::proc::hide_console;
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
-/// `opencode session list` boots OpenCode's full runtime — measured at 4-9s
-/// and ~245 MB RSS per invocation — so its results are reused far longer than
-/// the cheap file-based providers. A user-initiated refresh bypasses this via
-/// `invalidate_caches`.
-const RESULT_TTL: Duration = Duration::from_secs(300);
+/// Floor between CLI runs even when the database keeps changing (an active
+/// opencode writes its WAL constantly); each run costs 4-9s and ~245 MB RSS.
+const RELIST_MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Combined mtimes of opencode's database (+ WAL): if they didn't move, the
+/// sessions didn't change and the cached result is exact, no matter how old.
+#[derive(PartialEq, Clone, Copy, Debug, Default)]
+struct DbStamp {
+    db_mtime: f64,
+    wal_mtime: f64,
+}
+
+struct CachedList {
+    stamp: DbStamp,
+    at: std::time::Instant,
+    sessions: Vec<AgentSession>,
+}
 
 #[derive(Deserialize)]
 struct OpencodeSessionRow {
@@ -37,10 +49,11 @@ struct OpencodeSessionRow {
 
 pub struct OpencodeProvider {
     data_dir: PathBuf,
-    /// TTL result cache. The mutex is held across the subprocess call on
-    /// purpose (single-flight): concurrent scans wait for the in-flight CLI
-    /// run and reuse its result instead of stacking 245 MB processes.
-    cache: std::sync::Mutex<Option<(std::time::Instant, Vec<AgentSession>)>>,
+    /// Result cache keyed by the database stamp. The mutex is held across the
+    /// subprocess call on purpose (single-flight): concurrent scans wait for
+    /// the in-flight CLI run and reuse its result instead of stacking 245 MB
+    /// processes.
+    cache: std::sync::Mutex<Option<CachedList>>,
 }
 
 impl OpencodeProvider {
@@ -57,6 +70,21 @@ impl OpencodeProvider {
         Self {
             data_dir: base.join("opencode"),
             cache: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn db_stamp(&self) -> DbStamp {
+        let mtime = |name: &str| -> f64 {
+            std::fs::metadata(self.data_dir.join(name))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+        };
+        DbStamp {
+            db_mtime: mtime("opencode.db"),
+            wal_mtime: mtime("opencode.db-wal"),
         }
     }
 }
@@ -87,9 +115,12 @@ impl AgentProvider for OpencodeProvider {
 
     fn list_sessions(&self) -> Result<Vec<AgentSession>, String> {
         let mut cache = self.cache.lock().map_err(|e| e.to_string())?;
-        if let Some((at, sessions)) = cache.as_ref() {
-            if at.elapsed() < RESULT_TTL {
-                return Ok(sessions.clone());
+        let stamp = self.db_stamp();
+        if let Some(cached) = cache.as_ref() {
+            let unchanged = cached.stamp == stamp;
+            let too_soon = cached.at.elapsed() < RELIST_MIN_INTERVAL;
+            if unchanged || too_soon {
+                return Ok(cached.sessions.clone());
             }
         }
         let raw = run_with_timeout(
@@ -98,7 +129,13 @@ impl AgentProvider for OpencodeProvider {
             LIST_TIMEOUT,
         )?;
         let sessions = parse_session_list(&raw)?;
-        *cache = Some((std::time::Instant::now(), sessions.clone()));
+        *cache = Some(CachedList {
+            // Re-stamp after the run: the CLI itself may touch the WAL, and
+            // caching the pre-run stamp would invalidate immediately.
+            stamp: self.db_stamp(),
+            at: std::time::Instant::now(),
+            sessions: sessions.clone(),
+        });
         Ok(sessions)
     }
 
