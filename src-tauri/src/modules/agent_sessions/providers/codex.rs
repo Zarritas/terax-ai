@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::modules::agent_sessions::provider::AgentProvider;
+use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
 use crate::modules::agent_sessions::providers::claude::{strip_command_wrappers, truncate};
 use crate::modules::agent_sessions::types::AgentSession;
 
@@ -22,18 +22,23 @@ const HEADER_SCAN_LINES: usize = 40;
 
 pub struct CodexProvider {
     home: PathBuf,
+    cache: FileScanCache,
 }
 
 impl CodexProvider {
     pub fn new() -> Self {
         Self {
             home: dirs::home_dir().unwrap_or_default().join(".codex"),
+            cache: FileScanCache::default(),
         }
     }
 
     #[cfg(test)]
     pub fn with_home(home: PathBuf) -> Self {
-        Self { home }
+        Self {
+            home,
+            cache: FileScanCache::default(),
+        }
     }
 
     fn sessions_dir(&self) -> PathBuf {
@@ -68,10 +73,23 @@ impl AgentProvider for CodexProvider {
         let names = load_session_names(&self.home.join("session_index.jsonl"));
         let mut sessions = Vec::new();
         for rollout in collect_rollouts(&self.sessions_dir()) {
-            if let Some(session) = build_session(&rollout, &names) {
-                sessions.push(session);
+            let Some(mtime) = mtime_secs(&rollout) else {
+                continue;
+            };
+            let Some(mut session) = self
+                .cache
+                .get_or_build(&rollout, mtime, || build_session(&rollout))
+            else {
+                continue;
+            };
+            // Thread names live in the index, not the rollout: stamp fresh so
+            // a rename is reflected without invalidating the cached parse.
+            if let Some(name) = names.get(&session.id) {
+                session.title = Some(name.clone());
             }
+            sessions.push(session);
         }
+        self.cache.retain_existing();
         Ok(sessions)
     }
 
@@ -146,7 +164,7 @@ fn load_session_names(index_path: &Path) -> HashMap<String, String> {
     names
 }
 
-fn build_session(rollout: &Path, names: &HashMap<String, String>) -> Option<AgentSession> {
+fn build_session(rollout: &Path) -> Option<AgentSession> {
     let meta = std::fs::metadata(rollout).ok()?;
     let file = File::open(rollout).ok()?;
     let mut reader = BufReader::new(file).lines();
@@ -185,11 +203,10 @@ fn build_session(rollout: &Path, names: &HashMap<String, String>) -> Option<Agen
         }
     }
 
-    let title = names.get(&id).cloned().or(first_prompt);
     Some(AgentSession {
         provider: "codex".to_string(),
         id,
-        title,
+        title: first_prompt,
         cwd,
         branch: None,
         message_count: None,

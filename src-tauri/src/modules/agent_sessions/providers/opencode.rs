@@ -19,6 +19,10 @@ use crate::modules::agent_sessions::types::AgentSession;
 use crate::modules::proc::hide_console;
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+/// `opencode session list` boots OpenCode's full runtime — measured at 6-9s
+/// and ~245 MB RSS per invocation — so its results are reused far longer than
+/// the cheap file-based providers.
+const RESULT_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize)]
 struct OpencodeSessionRow {
@@ -32,6 +36,10 @@ struct OpencodeSessionRow {
 
 pub struct OpencodeProvider {
     data_dir: PathBuf,
+    /// TTL result cache. The mutex is held across the subprocess call on
+    /// purpose (single-flight): concurrent scans wait for the in-flight CLI
+    /// run and reuse its result instead of stacking 245 MB processes.
+    cache: std::sync::Mutex<Option<(std::time::Instant, Vec<AgentSession>)>>,
 }
 
 impl OpencodeProvider {
@@ -47,6 +55,7 @@ impl OpencodeProvider {
             });
         Self {
             data_dir: base.join("opencode"),
+            cache: std::sync::Mutex::new(None),
         }
     }
 }
@@ -76,12 +85,20 @@ impl AgentProvider for OpencodeProvider {
     }
 
     fn list_sessions(&self) -> Result<Vec<AgentSession>, String> {
+        let mut cache = self.cache.lock().map_err(|e| e.to_string())?;
+        if let Some((at, sessions)) = cache.as_ref() {
+            if at.elapsed() < RESULT_TTL {
+                return Ok(sessions.clone());
+            }
+        }
         let raw = run_with_timeout(
             self.binary(),
             &["session", "list", "--format", "json"],
             LIST_TIMEOUT,
         )?;
-        parse_session_list(&raw)
+        let sessions = parse_session_list(&raw)?;
+        *cache = Some((std::time::Instant::now(), sessions.clone()));
+        Ok(sessions)
     }
 
     fn resume_argv(&self, session_id: &str) -> Vec<String> {

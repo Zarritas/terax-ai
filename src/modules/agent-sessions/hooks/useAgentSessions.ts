@@ -4,24 +4,24 @@ import {
   watchAdd,
   watchRemove,
 } from "@/modules/explorer/lib/watch";
-import { listProviders, listSessions } from "../lib/native";
+import { listLiveSessions, listProviders, listSessions } from "../lib/native";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 
 const REFRESH_DEBOUNCE_MS = 400;
 
-/** Provider data dirs relative to home; used to scope fs:changed refetches. */
-const DATA_SUBDIRS = [".claude", ".codex", ".gemini"];
-
 /**
- * Loads providers + sessions into the store and keeps them fresh: watches the
- * providers' registry dirs (non-recursive — enough for Claude's live registry
- * and new project dirs), refetches on window focus, and exposes a manual
- * refresh. The backend's TTL cache makes overlapping refetches cheap.
+ * Loads providers + sessions into the store and keeps them fresh without
+ * burning CPU: the live registry (~/.claude/sessions) churns on every state
+ * transition of a running session, so its events only re-stamp the ACTIVE
+ * badges via the cheap agent_live_sessions command; only events under the
+ * providers' data roots trigger a real rescan (which the backend's per-file
+ * mtime caches keep cheap anyway). Window focus refetches through the 3s TTL.
  */
 export function useAgentSessions(home: string | null) {
-  const { setProviders, setSessions, setLoading, setError } =
+  const { setProviders, setSessions, setLoading, setError, applyLiveSessions } =
     useAgentSessionsStore.getState();
-  const debounceRef = useRef<number | null>(null);
+  const scanDebounceRef = useRef<number | null>(null);
+  const liveDebounceRef = useRef<number | null>(null);
 
   const refresh = useCallback(
     async (force = false) => {
@@ -43,44 +43,64 @@ export function useAgentSessions(home: string | null) {
     [setProviders, setSessions, setLoading, setError],
   );
 
+  const refreshLiveBadges = useCallback(async () => {
+    try {
+      const live = await listLiveSessions();
+      applyLiveSessions(new Set(live.map((l) => l.sessionId)));
+    } catch {
+      // badge staleness is acceptable; the next full refresh corrects it
+    }
+  }, [applyLiveSessions]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  // Watch the live registry (~/.claude/sessions) and provider roots so the
-  // ACTIVE badge tracks reality without polling. Non-recursive: deep jsonl
-  // appends rely on the focus refetch below.
   useEffect(() => {
     if (!home) return;
-    const dirs = [
-      `${home}/.claude/sessions`,
+    const liveRegistryDir = `${home}/.claude/sessions`;
+    const dataDirs = [
       `${home}/.claude/projects`,
       `${home}/.codex/sessions`,
       `${home}/.gemini/tmp`,
     ];
-    watchAdd(dirs);
+    watchAdd([liveRegistryDir, ...dataDirs]);
     let dispose: (() => void) | undefined;
     void listenFsChanged((paths) => {
-      const relevant = paths.some((p) =>
-        DATA_SUBDIRS.some((sub) => p.includes(`${home}/${sub}`)),
+      const touchesLiveRegistry = paths.some((p) =>
+        p.includes(liveRegistryDir),
       );
-      if (!relevant) return;
-      if (debounceRef.current !== null)
-        window.clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(() => {
-        debounceRef.current = null;
+      const touchesData = paths.some((p) =>
+        dataDirs.some((d) => p.includes(d)),
+      );
+      if (touchesLiveRegistry && !touchesData) {
+        if (liveDebounceRef.current !== null)
+          window.clearTimeout(liveDebounceRef.current);
+        liveDebounceRef.current = window.setTimeout(() => {
+          liveDebounceRef.current = null;
+          void refreshLiveBadges();
+        }, REFRESH_DEBOUNCE_MS);
+        return;
+      }
+      if (!touchesData) return;
+      if (scanDebounceRef.current !== null)
+        window.clearTimeout(scanDebounceRef.current);
+      scanDebounceRef.current = window.setTimeout(() => {
+        scanDebounceRef.current = null;
         void refresh(true);
       }, REFRESH_DEBOUNCE_MS);
     }).then((d) => {
       dispose = d;
     });
     return () => {
-      watchRemove(dirs);
+      watchRemove([liveRegistryDir, ...dataDirs]);
       dispose?.();
-      if (debounceRef.current !== null)
-        window.clearTimeout(debounceRef.current);
+      if (scanDebounceRef.current !== null)
+        window.clearTimeout(scanDebounceRef.current);
+      if (liveDebounceRef.current !== null)
+        window.clearTimeout(liveDebounceRef.current);
     };
-  }, [home, refresh]);
+  }, [home, refresh, refreshLiveBadges]);
 
   useEffect(() => {
     const onFocus = () => void refresh();

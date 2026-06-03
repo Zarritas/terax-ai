@@ -12,23 +12,28 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::modules::agent_sessions::provider::AgentProvider;
+use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
 use crate::modules::agent_sessions::types::AgentSession;
 
 pub struct GeminiProvider {
     home: PathBuf,
+    cache: FileScanCache,
 }
 
 impl GeminiProvider {
     pub fn new() -> Self {
         Self {
             home: dirs::home_dir().unwrap_or_default().join(".gemini"),
+            cache: FileScanCache::default(),
         }
     }
 
     #[cfg(test)]
     pub fn with_home(home: PathBuf) -> Self {
-        Self { home }
+        Self {
+            home,
+            cache: FileScanCache::default(),
+        }
     }
 
     fn tmp_dir(&self) -> PathBuf {
@@ -83,11 +88,18 @@ impl AgentProvider for GeminiProvider {
                 if !name.starts_with("session-") || !name.ends_with(".jsonl") {
                     continue;
                 }
-                if let Some(session) = build_session(&path, cwd.clone()) {
+                let Some(mtime) = mtime_secs(&path) else {
+                    continue;
+                };
+                if let Some(session) = self
+                    .cache
+                    .get_or_build(&path, mtime, || build_session(&path, cwd.clone()))
+                {
                     sessions.push(session);
                 }
             }
         }
+        self.cache.retain_existing();
         Ok(sessions)
     }
 

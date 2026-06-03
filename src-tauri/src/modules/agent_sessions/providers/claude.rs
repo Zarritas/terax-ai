@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::modules::agent_sessions::live;
-use crate::modules::agent_sessions::provider::AgentProvider;
+use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
 use crate::modules::agent_sessions::types::{AgentSession, LiveAgentSession};
 
 const HEADER_SCAN_LINES: usize = 80;
@@ -28,18 +28,23 @@ const LINE_COUNT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 pub struct ClaudeProvider {
     home: PathBuf,
+    cache: FileScanCache,
 }
 
 impl ClaudeProvider {
     pub fn new() -> Self {
         Self {
             home: dirs::home_dir().unwrap_or_default().join(".claude"),
+            cache: FileScanCache::default(),
         }
     }
 
     #[cfg(test)]
     pub fn with_home(home: PathBuf) -> Self {
-        Self { home }
+        Self {
+            home,
+            cache: FileScanCache::default(),
+        }
     }
 
     fn projects_dir(&self) -> PathBuf {
@@ -92,12 +97,21 @@ impl AgentProvider for ClaudeProvider {
             }
             let project_cwd = resolve_real_cwd(&project_dir, &jsonl_files);
             for jsonl in &jsonl_files {
-                let Some(session) = build_session(jsonl, project_cwd.as_deref(), &active) else {
+                let Some(mtime) = mtime_secs(jsonl) else {
                     continue;
                 };
+                // The expensive parse (header + line count + rename scan) is
+                // cached by mtime; activity is stamped fresh on every call.
+                let Some(mut session) = self.cache.get_or_build(jsonl, mtime, || {
+                    build_session(jsonl, project_cwd.as_deref())
+                }) else {
+                    continue;
+                };
+                session.is_active = active.contains(&session.id);
                 sessions.push(session);
             }
         }
+        self.cache.retain_existing();
         Ok(sessions)
     }
 
@@ -133,11 +147,7 @@ fn jsonl_files_newest_first(project_dir: &Path) -> Vec<PathBuf> {
     files.into_iter().map(|(_, p)| p).collect()
 }
 
-fn build_session(
-    jsonl: &Path,
-    project_cwd: Option<&str>,
-    active: &HashSet<String>,
-) -> Option<AgentSession> {
+fn build_session(jsonl: &Path, project_cwd: Option<&str>) -> Option<AgentSession> {
     let id = jsonl.file_stem()?.to_string_lossy().to_string();
     let meta = std::fs::metadata(jsonl).ok()?;
     let header = parse_session_header(jsonl);
@@ -152,7 +162,7 @@ fn build_session(
         .or(header.first_prompt);
     Some(AgentSession {
         provider: "claude".to_string(),
-        is_active: active.contains(&id),
+        is_active: false, // stamped per call from the live registry
         resume_argv: Vec::new(),
         id,
         title,
