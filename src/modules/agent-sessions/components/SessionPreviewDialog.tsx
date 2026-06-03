@@ -5,7 +5,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import type { SessionMetadata } from "../lib/metadata";
@@ -33,14 +32,14 @@ export function SessionPreviewDialog({ preview, metadata, onClose }: Props) {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle className="truncate pr-6">
+          <DialogTitle className="truncate pr-8">
             {sessionLabel(session, meta)}
           </DialogTitle>
         </DialogHeader>
         <p className="break-all font-mono text-[10px] text-muted-foreground">
           {session.provider} · {session.id}
         </p>
-        <ScrollArea className="max-h-[55vh]">
+        <div className="max-h-[55vh] overflow-y-auto">
           {turns === null && !error ? (
             <div className="flex items-center justify-center py-8">
               <Spinner />
@@ -79,7 +78,7 @@ export function SessionPreviewDialog({ preview, metadata, onClose }: Props) {
               </div>
             ))}
           </div>
-        </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   );

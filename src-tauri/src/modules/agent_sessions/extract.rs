@@ -10,8 +10,11 @@ use serde_json::Value;
 
 use crate::modules::agent_sessions::types::PreviewTurn;
 
-/// Tail window read for previews (mirrors multi-claude's cheap tail).
-pub const PREVIEW_TAIL_LINES: usize = 60;
+/// Tail window read for previews. Much deeper than multi-claude's 60: agentic
+/// sessions emit dozens of assistant/tool events per user message, so a short
+/// tail shows only ASSISTANT turns (observed in real use). The turn limit
+/// below still caps what renders.
+pub const PREVIEW_TAIL_LINES: usize = 400;
 /// Most recent turns shown.
 pub const PREVIEW_TURN_LIMIT: usize = 12;
 /// Per-turn character cap.
