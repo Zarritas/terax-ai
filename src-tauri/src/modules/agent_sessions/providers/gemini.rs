@@ -240,6 +240,7 @@ fn build_session(chat_file: &Path, cwd: Option<String>) -> Option<AgentSession> 
         last_activity: mtime_secs(chat_file).unwrap_or(0.0),
         is_active: false,
         context_tokens: None,
+        context_window: None,
         resume_argv: Vec::new(),
     })
 }

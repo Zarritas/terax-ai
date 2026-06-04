@@ -23,6 +23,10 @@ pub struct AgentSession {
     /// Context-window tokens of the latest model turn (input + cache read +
     /// cache creation), when the provider records usage. None otherwise.
     pub context_tokens: Option<u64>,
+    /// Size of the model's context window. Exact for codex (session_meta
+    /// reports it); inferred for claude (200k, upgraded to 1M once usage
+    /// exceeds it — conservative, so the warning never under-fires).
+    pub context_window: Option<u64>,
     /// Argv the frontend writes into a new terminal to resume this session.
     /// Filled centrally from `AgentProvider::resume_argv` so the command
     /// surface stays in one place; providers construct it empty.

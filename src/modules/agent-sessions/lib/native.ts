@@ -15,6 +15,8 @@ export type AgentSession = {
   isActive: boolean;
   /** Context-window tokens of the latest model turn, when recorded. */
   contextTokens: number | null;
+  /** Model context window size (exact for codex, inferred for claude). */
+  contextWindow: number | null;
   /** Backend-built argv to resume this session in a terminal. */
   resumeArgv: string[];
 };

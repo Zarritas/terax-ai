@@ -415,3 +415,17 @@ export function formatTokens(n: number): string {
   const m = n / 1_000_000;
   return `${m >= 10 ? Math.round(m) : m.toFixed(1)}M`;
 }
+
+/** Percentage of the context window consumed, clamped to [0, 100]. */
+export function contextPercent(tokens: number, window: number): number {
+  if (window <= 0) return 0;
+  return Math.min(100, Math.round((tokens / window) * 100));
+}
+
+/** Color by how much context remains: quiet until half, then escalating. */
+export function contextColorClass(percentUsed: number): string {
+  if (percentUsed >= 90) return "text-red-500";
+  if (percentUsed >= 75) return "text-orange-500";
+  if (percentUsed >= 50) return "text-amber-500";
+  return "text-muted-foreground";
+}

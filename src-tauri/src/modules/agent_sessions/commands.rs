@@ -474,6 +474,7 @@ mod tests {
                     last_activity: 100.0,
                     is_active: false,
                     context_tokens: None,
+                    context_window: None,
                     resume_argv: Vec::new(),
                 },
                 AgentSession {
@@ -487,6 +488,7 @@ mod tests {
                     last_activity: 200.0,
                     is_active: false,
                     context_tokens: None,
+                    context_window: None,
                     resume_argv: Vec::new(),
                 },
             ])

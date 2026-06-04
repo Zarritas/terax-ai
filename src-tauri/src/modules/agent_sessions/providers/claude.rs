@@ -247,6 +247,7 @@ fn build_session(jsonl: &Path, project_cwd: Option<&str>) -> Option<AgentSession
         provider: "claude".to_string(),
         is_active: false, // stamped per call from the live registry
         resume_argv: Vec::new(),
+        context_window: deep.context_tokens.map(infer_claude_window),
         context_tokens: deep.context_tokens,
         id,
         title,
@@ -439,6 +440,17 @@ fn deep_scan(jsonl: &Path) -> DeepScan {
     result.embedded_name = latest;
     result.context_tokens = latest_usage_line.as_deref().and_then(parse_context_tokens);
     result
+}
+
+/// Claude's logs don't record the window size. Assume the 200k baseline and
+/// upgrade to the 1M beta once usage proves it — conservative on purpose: a
+/// 1M user sees a pessimistic percentage below 200k, never an optimistic one.
+fn infer_claude_window(tokens: u64) -> u64 {
+    if tokens > 200_000 {
+        1_000_000
+    } else {
+        200_000
+    }
 }
 
 /// Context size of one assistant event: usage input + cache read + cache

@@ -20,6 +20,8 @@ import type { SessionMetadata } from "../lib/metadata";
 import type { AgentSession } from "../lib/native";
 import {
   colorClasses,
+  contextColorClass,
+  contextPercent,
   formatBytes,
   formatRelativeTime,
   formatTokens,
@@ -118,12 +120,25 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                       {formatBytes(session.sizeBytes)}
                     </span>
                   ) : null}
-                  {session.contextTokens !== null ? (
+                  {session.contextTokens !== null &&
+                  session.contextWindow !== null ? (
                     <span
-                      className="shrink-0 tabular-nums"
-                      title="Context-window tokens of the latest turn"
+                      className={cn(
+                        "shrink-0 font-medium tabular-nums",
+                        contextColorClass(
+                          contextPercent(
+                            session.contextTokens,
+                            session.contextWindow,
+                          ),
+                        ),
+                      )}
+                      title={`${formatTokens(session.contextTokens)} of ~${formatTokens(session.contextWindow)} context tokens used`}
                     >
-                      {formatTokens(session.contextTokens)} ctx
+                      {contextPercent(
+                        session.contextTokens,
+                        session.contextWindow,
+                      )}
+                      % ctx
                     </span>
                   ) : null}
                   <span className="ml-auto shrink-0 tabular-nums">

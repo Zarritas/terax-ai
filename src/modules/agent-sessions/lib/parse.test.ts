@@ -8,6 +8,8 @@ import {
 import type { AgentSession } from "./native";
 import {
   colorClasses,
+  contextColorClass,
+  contextPercent,
   formatBytes,
   formatRelativeTime,
   formatTokens,
@@ -38,6 +40,7 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     lastActivity: 0,
     isActive: false,
     contextTokens: null,
+    contextWindow: null,
     resumeArgv: ["claude", "--resume", "abc-123"],
     ...overrides,
   };
@@ -207,6 +210,22 @@ describe("safeFilename", () => {
     );
     expect(safeFilename("  --..  ")).toBe("session");
     expect(safeFilename("x".repeat(100)).length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe("context usage helpers", () => {
+  it("computes clamped percentages", () => {
+    expect(contextPercent(857_000, 1_000_000)).toBe(86);
+    expect(contextPercent(50_000, 200_000)).toBe(25);
+    expect(contextPercent(2_000_000, 1_000_000)).toBe(100);
+    expect(contextPercent(10, 0)).toBe(0);
+  });
+
+  it("escalates color as context runs out", () => {
+    expect(contextColorClass(10)).toBe("text-muted-foreground");
+    expect(contextColorClass(55)).toBe("text-amber-500");
+    expect(contextColorClass(80)).toBe("text-orange-500");
+    expect(contextColorClass(95)).toBe("text-red-500");
   });
 });
 

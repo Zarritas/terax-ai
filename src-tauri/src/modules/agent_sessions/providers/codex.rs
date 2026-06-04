@@ -257,6 +257,7 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
     }
     let payload = head.get("payload")?;
     let id = payload.get("id").and_then(Value::as_str)?.to_string();
+    let context_window = payload.get("model_context_window").and_then(Value::as_u64);
     let cwd = payload
         .get("cwd")
         .and_then(Value::as_str)
@@ -294,6 +295,7 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
         last_activity: mtime_secs(rollout).unwrap_or(0.0),
         is_active: false,
         context_tokens: latest_context_tokens(rollout),
+        context_window,
         resume_argv: Vec::new(),
     })
 }
