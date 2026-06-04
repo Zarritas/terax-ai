@@ -50,6 +50,7 @@ notify = "8.2.0"
 rusqlite = { version = "0.37", features = ["bundled"] }
 zip = { version = "5", default-features = false, features = ["deflate"] }
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-clipboard-manager = "2"
 
 [dev-dependencies]
 proptest = "1"
