@@ -107,10 +107,21 @@ impl FileScanCache {
 
 /// Resolve `name` against PATH like the shell would, including Windows
 /// extensions (`.exe`, `.cmd`, `.bat`) since agent CLIs ship as npm shims there.
+///
+/// GUI launches inherit a PATH without the entries that interactive-shell rc
+/// files add (nvm, fnm, volta, bun…) — exactly where npm-installed agent CLIs
+/// live. The new-session PTY runs the user's shell, so those binaries *are*
+/// launchable even when this process can't see them; well-known per-user bin
+/// dirs are searched as a fallback so the menu matches what the shell can run.
 pub fn binary_in_path(name: &str) -> bool {
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    dirs.extend(shell_only_bin_dirs());
+    binary_in_dirs(name, &dirs)
+}
+
+fn binary_in_dirs(name: &str, dirs: &[PathBuf]) -> bool {
     let candidates: Vec<String> = if cfg!(windows) {
         ["", ".exe", ".cmd", ".bat"]
             .iter()
@@ -119,12 +130,52 @@ pub fn binary_in_path(name: &str) -> bool {
     } else {
         vec![name.to_string()]
     };
-    env::split_paths(&paths).any(|dir| {
+    dirs.iter().any(|dir| {
         candidates.iter().any(|c| {
             let full: PathBuf = dir.join(c);
             full.is_file()
         })
     })
+}
+
+/// Per-user bin dirs that interactive shells put on PATH but GUI launches miss.
+fn shell_only_bin_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut out = vec![
+        home.join(".local/bin"),
+        home.join(".bun/bin"),
+        home.join(".cargo/bin"),
+        home.join(".volta/bin"),
+        home.join(".asdf/shims"),
+        home.join(".local/share/mise/shims"),
+        home.join(".npm-global/bin"),
+    ];
+    // Node version managers nest binaries under per-version directories.
+    for versions_root in [
+        home.join(".nvm/versions/node"),
+        home.join(".config/nvm/versions/node"),
+    ] {
+        out.extend(version_bin_dirs(&versions_root, "bin"));
+    }
+    out.extend(version_bin_dirs(
+        &home.join(".local/share/fnm/node-versions"),
+        "installation/bin",
+    ));
+    out
+}
+
+/// Expand `<root>/<version>/<suffix>` for every version dir under `root`.
+fn version_bin_dirs(root: &Path, suffix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join(suffix))
+        .filter(|p| p.is_dir())
+        .collect()
 }
 
 #[cfg(test)]
@@ -140,6 +191,28 @@ mod tests {
     #[test]
     fn binary_in_path_rejects_nonexistent() {
         assert!(!binary_in_path("definitely-not-a-real-binary-xyz"));
+    }
+
+    #[test]
+    fn binary_in_dirs_finds_file_outside_path() {
+        let tmp = std::env::temp_dir().join("terax-test-bin-dirs");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let bin = tmp.join("fake-agent-cli");
+        std::fs::write(&bin, b"").unwrap();
+        assert!(binary_in_dirs("fake-agent-cli", &[tmp.clone()]));
+        assert!(!binary_in_dirs("fake-agent-cli", &[tmp.join("nope")]));
+        let _ = std::fs::remove_file(&bin);
+    }
+
+    #[test]
+    fn version_bin_dirs_expands_versions_and_skips_missing_root() {
+        let root = std::env::temp_dir().join("terax-test-nvm/versions/node");
+        let bin = root.join("v25.0.0/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let dirs = version_bin_dirs(&root, "bin");
+        assert_eq!(dirs, vec![bin]);
+        assert!(version_bin_dirs(Path::new("/definitely/missing"), "bin").is_empty());
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("terax-test-nvm"));
     }
 
     fn dummy_session(title: &str) -> AgentSession {
