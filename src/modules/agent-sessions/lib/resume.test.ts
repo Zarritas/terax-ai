@@ -17,6 +17,7 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     sizeBytes: null,
     lastActivity: 0,
     isActive: false,
+    contextTokens: null,
     resumeArgv: ["claude", "--resume", "sid-1"],
     ...overrides,
   };

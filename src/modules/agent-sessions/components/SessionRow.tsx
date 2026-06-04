@@ -22,6 +22,7 @@ import {
   colorClasses,
   formatBytes,
   formatRelativeTime,
+  formatTokens,
   SESSION_COLORS,
   sessionLabel,
 } from "../lib/parse";
@@ -115,6 +116,14 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                   {session.sizeBytes !== null ? (
                     <span className="shrink-0 tabular-nums">
                       {formatBytes(session.sizeBytes)}
+                    </span>
+                  ) : null}
+                  {session.contextTokens !== null ? (
+                    <span
+                      className="shrink-0 tabular-nums"
+                      title="Context-window tokens of the latest turn"
+                    >
+                      {formatTokens(session.contextTokens)} ctx
                     </span>
                   ) : null}
                   <span className="ml-auto shrink-0 tabular-nums">

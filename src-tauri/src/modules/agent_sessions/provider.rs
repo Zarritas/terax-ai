@@ -148,6 +148,7 @@ mod tests {
             size_bytes: None,
             last_activity: 0.0,
             is_active: false,
+            context_tokens: None,
             resume_argv: Vec::new(),
         }
     }

@@ -473,6 +473,7 @@ mod tests {
                     size_bytes: None,
                     last_activity: 100.0,
                     is_active: false,
+                    context_tokens: None,
                     resume_argv: Vec::new(),
                 },
                 AgentSession {
@@ -485,6 +486,7 @@ mod tests {
                     size_bytes: None,
                     last_activity: 200.0,
                     is_active: false,
+                    context_tokens: None,
                     resume_argv: Vec::new(),
                 },
             ])

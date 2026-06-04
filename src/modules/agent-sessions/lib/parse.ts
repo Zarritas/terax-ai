@@ -407,3 +407,11 @@ export function groupByProviderWithFolders(
     };
   });
 }
+
+/** Compact token count: 857 -> "857", 85_700 -> "86k", 1_230_000 -> "1.2M". */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  const m = n / 1_000_000;
+  return `${m >= 10 ? Math.round(m) : m.toFixed(1)}M`;
+}

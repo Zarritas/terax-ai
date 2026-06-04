@@ -238,14 +238,16 @@ fn build_session(jsonl: &Path, project_cwd: Option<&str>) -> Option<AgentSession
     } else {
         None
     };
-    let embedded_name = extract_embedded_name(jsonl);
-    let title = embedded_name
+    let deep = deep_scan(jsonl);
+    let title = deep
+        .embedded_name
         .or(header.display_name)
         .or(header.first_prompt);
     Some(AgentSession {
         provider: "claude".to_string(),
         is_active: false, // stamped per call from the live registry
         resume_argv: Vec::new(),
+        context_tokens: deep.context_tokens,
         id,
         title,
         // Resume must run under the cwd the project dir was named after;
@@ -379,16 +381,32 @@ fn extract_user_prompt(event: &Value) -> Option<String> {
     None
 }
 
-/// Return the latest name set via Claude's `/rename`, scanning up to
-/// RENAME_SCAN_LINES events for `system/local_command` stdout markers (later
-/// renames win); also accepts a deprecated top-level `name` string.
-fn extract_embedded_name(jsonl: &Path) -> Option<String> {
+#[derive(Default)]
+struct DeepScan {
+    embedded_name: Option<String>,
+    context_tokens: Option<u64>,
+}
+
+/// One bounded pass over the log capturing the latest `/rename` (later
+/// renames win — `system/local_command` stdout markers, plus a deprecated
+/// top-level `name` string) and the latest `usage` block, whose input +
+/// cache tokens equal the session's current context size. Only candidate
+/// lines are JSON-parsed; the usage candidate is kept as a string and parsed
+/// once at the end.
+fn deep_scan(jsonl: &Path) -> DeepScan {
     const MARKER: &str = "Session renamed to:";
-    let file = File::open(jsonl).ok()?;
+    let mut result = DeepScan::default();
+    let Ok(file) = File::open(jsonl) else {
+        return result;
+    };
     let reader = BufReader::new(file);
     let mut latest: Option<String> = None;
+    let mut latest_usage_line: Option<String> = None;
     for line in reader.lines().take(RENAME_SCAN_LINES) {
         let Ok(line) = line else { break };
+        if line.contains("\"usage\"") {
+            latest_usage_line = Some(line.clone());
+        }
         // Cheap pre-filter: full JSON parse only for candidate lines.
         let has_marker = line.contains(MARKER);
         let has_name = line.contains("\"name\"");
@@ -418,7 +436,21 @@ fn extract_embedded_name(jsonl: &Path) -> Option<String> {
             latest = Some(name);
         }
     }
-    latest
+    result.embedded_name = latest;
+    result.context_tokens = latest_usage_line.as_deref().and_then(parse_context_tokens);
+    result
+}
+
+/// Context size of one assistant event: usage input + cache read + cache
+/// creation tokens (what Claude Code itself reports as context).
+fn parse_context_tokens(line: &str) -> Option<u64> {
+    let event = serde_json::from_str::<Value>(line).ok()?;
+    let usage = event.get("message")?.get("usage")?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let total = field("input_tokens")
+        + field("cache_read_input_tokens")
+        + field("cache_creation_input_tokens");
+    (total > 0).then_some(total)
 }
 
 /// Extract X from `<local-command-stdout>Session renamed to: X</local-command-stdout>`.
@@ -523,7 +555,7 @@ mod tests {
                 &rename("segundo"),
             ],
         );
-        assert_eq!(extract_embedded_name(&path).as_deref(), Some("segundo"));
+        assert_eq!(deep_scan(&path).embedded_name.as_deref(), Some("segundo"));
     }
 
     #[test]
@@ -577,6 +609,26 @@ mod tests {
         let p = ClaudeProvider::new();
         assert_eq!(p.resume_argv("xyz"), vec!["claude", "--resume", "xyz"]);
         assert_eq!(p.new_session_argv(), vec!["claude"]);
+    }
+
+    #[test]
+    fn deep_scan_captures_latest_context_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let usage = |inp: u64, read: u64| {
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"usage\":{{\"input_tokens\":{inp},\
+                 \"cache_read_input_tokens\":{read},\"cache_creation_input_tokens\":100,\
+                 \"output_tokens\":5}}}}}}"
+            )
+        };
+        let path = write_session(
+            tmp.path(),
+            "s-ctx",
+            &[&user_event("/w", "p"), &usage(10, 1000), &usage(2, 856_101)],
+        );
+        let deep = deep_scan(&path);
+        // Latest usage wins: 2 + 856101 + 100.
+        assert_eq!(deep.context_tokens, Some(856_203));
     }
 
     #[test]

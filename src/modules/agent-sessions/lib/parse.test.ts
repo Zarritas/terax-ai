@@ -10,6 +10,7 @@ import {
   colorClasses,
   formatBytes,
   formatRelativeTime,
+  formatTokens,
   groupByProject,
   groupByProviderThenProject,
   groupByProviderWithFolders,
@@ -36,6 +37,7 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     sizeBytes: null,
     lastActivity: 0,
     isActive: false,
+    contextTokens: null,
     resumeArgv: ["claude", "--resume", "abc-123"],
     ...overrides,
   };
@@ -205,6 +207,15 @@ describe("safeFilename", () => {
     );
     expect(safeFilename("  --..  ")).toBe("session");
     expect(safeFilename("x".repeat(100)).length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe("formatTokens", () => {
+  it("compacts magnitudes", () => {
+    expect(formatTokens(857)).toBe("857");
+    expect(formatTokens(85_700)).toBe("86k");
+    expect(formatTokens(857_244)).toBe("857k");
+    expect(formatTokens(1_230_000)).toBe("1.2M");
   });
 });
 

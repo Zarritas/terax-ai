@@ -293,8 +293,36 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
         size_bytes: Some(meta.len()),
         last_activity: mtime_secs(rollout).unwrap_or(0.0),
         is_active: false,
+        context_tokens: latest_context_tokens(rollout),
         resume_argv: Vec::new(),
     })
+}
+
+/// Latest token_count event from the rollout tail, parsed defensively: the
+/// payload `info` is often null (short exec sessions) and its populated
+/// shape varies across codex versions, so any known total field wins.
+fn latest_context_tokens(rollout: &Path) -> Option<u64> {
+    let line = extract::tail_lines(rollout, 40)
+        .into_iter()
+        .rev()
+        .find(|l| l.contains("\"token_count\""))?;
+    let event = serde_json::from_str::<Value>(&line).ok()?;
+    let info = event.get("payload")?.get("info")?;
+    for source in ["total_token_usage", "last_token_usage"] {
+        if let Some(usage) = info.get(source) {
+            let field = |n: &str| usage.get(n).and_then(Value::as_u64).unwrap_or(0);
+            let total = field("input_tokens") + field("cached_input_tokens");
+            if total > 0 {
+                return Some(total);
+            }
+            if let Some(t) = usage.get("total_tokens").and_then(Value::as_u64) {
+                if t > 0 {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn mtime_secs(path: &Path) -> Option<f64> {

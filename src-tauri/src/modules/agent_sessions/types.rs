@@ -20,6 +20,9 @@ pub struct AgentSession {
     /// True when the provider's live registry reports the session as running.
     /// Only Claude Code persists such a registry today.
     pub is_active: bool,
+    /// Context-window tokens of the latest model turn (input + cache read +
+    /// cache creation), when the provider records usage. None otherwise.
+    pub context_tokens: Option<u64>,
     /// Argv the frontend writes into a new terminal to resume this session.
     /// Filled centrally from `AgentProvider::resume_argv` so the command
     /// surface stays in one place; providers construct it empty.

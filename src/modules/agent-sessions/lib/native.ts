@@ -13,6 +13,8 @@ export type AgentSession = {
   /** Unix seconds. */
   lastActivity: number;
   isActive: boolean;
+  /** Context-window tokens of the latest model turn, when recorded. */
+  contextTokens: number | null;
   /** Backend-built argv to resume this session in a terminal. */
   resumeArgv: string[];
 };
