@@ -12,7 +12,7 @@ import {
   open as openFileDialog,
   save as saveFileDialog,
 } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -332,9 +332,6 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     [updateMetadata],
   );
 
-  // Session keys with a headless compaction in flight (runs take minutes).
-  const compacting = useRef<Set<string>>(new Set());
-
   const handleCompact = useCallback(
     (session: AgentSession) => {
       // Live in a Terax tab: type the slash command into its PTY.
@@ -355,15 +352,19 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
         return;
       }
       const key = `${session.provider}:${session.id}`;
-      if (compacting.current.has(key)) {
+      // Read fresh from the store: rows render the badge off this same set.
+      const { compactingIds, setCompacting } = useAgentSessionsStore.getState();
+      if (compactingIds.has(key)) {
         toast.info("This session is already being compacted");
         return;
       }
-      compacting.current.add(key);
+      setCompacting(key, true);
       const label = sessionLabel(session, metadata[key]);
       toast.promise(
         compactSession(session.provider, session.id, session.cwd)
-          .finally(() => compacting.current.delete(key))
+          .finally(() =>
+            useAgentSessionsStore.getState().setCompacting(key, false),
+          )
           .then(() => refresh(true)),
         {
           loading: `Compacting "${label}"… (this can take a couple of minutes)`,
@@ -404,6 +405,17 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
 
   const handleRowAction = useCallback(
     (session: AgentSession, action: RowAction) => {
+      // The headless compactor isn't in the live registry, so the backend
+      // ACTIVE guard can't see it — block file-moving actions here.
+      if (
+        (action.kind === "delete" || action.kind === "move") &&
+        useAgentSessionsStore
+          .getState()
+          .compactingIds.has(`${session.provider}:${session.id}`)
+      ) {
+        toast.info("Compaction in progress — try again when it finishes");
+        return;
+      }
       switch (action.kind) {
         case "rename":
           setDialog({ kind: "rename", session });
@@ -464,7 +476,15 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
       collapsed,
       toggleCollapsed,
       metadata,
-      onResume: bridge.resumeSession,
+      // Resuming would race the headless compaction over one session log.
+      onResume: (session) => {
+        const key = `${session.provider}:${session.id}`;
+        if (useAgentSessionsStore.getState().compactingIds.has(key)) {
+          toast.info("Compaction in progress — resume when it finishes");
+          return;
+        }
+        bridge.resumeSession(session);
+      },
       onRowAction: handleRowAction,
       onMoveProjectToFolder: (provider, cwd) =>
         setFolderDialog({ kind: "move-to-folder", provider, cwd }),

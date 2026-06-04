@@ -31,6 +31,7 @@ import {
   sessionLabel,
   shortModelName,
 } from "../lib/parse";
+import { useAgentSessionsStore } from "../store/agentSessionsStore";
 
 export type RowAction =
   | { kind: "rename" }
@@ -53,6 +54,9 @@ type Props = {
 export function SessionRow({ session, meta, onResume, onAction }: Props) {
   const color = colorClasses(meta?.color);
   const tags = meta?.tags ?? [];
+  const isCompacting = useAgentSessionsStore((s) =>
+    s.compactingIds.has(`${session.provider}:${session.id}`),
+  );
   return (
     <ContextMenu>
       <Tooltip>
@@ -84,6 +88,15 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                   >
                     {sessionLabel(session, meta)}
                   </span>
+                  {isCompacting ? (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-sky-500"
+                      title="Headless compaction in progress — the context is being summarized"
+                    >
+                      <span className="size-1.5 animate-pulse rounded-full bg-sky-500" />
+                      compacting
+                    </span>
+                  ) : null}
                   {session.isActive ? (
                     session.liveStatus === "busy" ? (
                       <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-emerald-500">
@@ -232,9 +245,10 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         {session.provider === "claude" || session.isActive ? (
           // Claude compacts headless; other providers only from a live tab.
           <ContextMenuItem
+            disabled={isCompacting}
             onClick={() => onAction(session, { kind: "compact" })}
           >
-            Compact context
+            {isCompacting ? "Compacting…" : "Compact context"}
           </ContextMenuItem>
         ) : null}
         <ContextMenuItem
