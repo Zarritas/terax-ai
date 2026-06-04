@@ -3,7 +3,11 @@ import type { FoldersState } from "../lib/folders";
 import { emptyFoldersState, saveFolders } from "../lib/folders";
 import type { SessionMetadata } from "../lib/metadata";
 import { metadataKey } from "../lib/metadata";
-import type { AgentProviderInfo, AgentSession } from "../lib/native";
+import type {
+  AgentProviderInfo,
+  AgentSession,
+  ProviderQuota,
+} from "../lib/native";
 
 type AgentSessionsState = {
   providers: AgentProviderInfo[];
@@ -19,6 +23,8 @@ type AgentSessionsState = {
   searchIds: Set<string> | null;
   /** User folders/groups organization (persisted separately). */
   folders: FoldersState;
+  /** Account-level usage windows per provider (session/weekly). */
+  quotas: ProviderQuota[];
   setProviders: (providers: AgentProviderInfo[]) => void;
   setSessions: (sessions: AgentSession[]) => void;
   /** Re-stamp isActive from the live registry without a full rescan. */
@@ -35,6 +41,7 @@ type AgentSessionsState = {
   ) => void;
   setSearchIds: (searchIds: Set<string> | null) => void;
   setFolders: (folders: FoldersState) => void;
+  setQuotas: (quotas: ProviderQuota[]) => void;
   /** Apply a pure folders transition optimistically and persist in background. */
   applyFolders: (mutate: (state: FoldersState) => FoldersState) => void;
 };
@@ -49,6 +56,7 @@ export const useAgentSessionsStore = create<AgentSessionsState>((set) => ({
   metadata: {},
   searchIds: null,
   folders: emptyFoldersState(),
+  quotas: [],
 
   setProviders: (providers) => set({ providers }),
   setSessions: (sessions) => set({ sessions }),
@@ -84,6 +92,7 @@ export const useAgentSessionsStore = create<AgentSessionsState>((set) => ({
     }),
   setSearchIds: (searchIds) => set({ searchIds }),
   setFolders: (folders) => set({ folders }),
+  setQuotas: (quotas) => set({ quotas }),
   applyFolders: (mutate) =>
     set((s) => {
       const folders = mutate(s.folders);

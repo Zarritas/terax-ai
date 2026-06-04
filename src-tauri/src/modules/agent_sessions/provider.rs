@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::modules::agent_sessions::types::{
-    AgentSession, DeleteError, LiveAgentSession, PreviewTurn,
+    AgentSession, DeleteError, LiveAgentSession, PreviewTurn, ProviderQuota,
 };
 
 /// One coding-agent CLI whose on-disk sessions we know how to read.
@@ -48,6 +48,11 @@ pub trait AgentProvider: Send + Sync {
     /// guard (only claude keeps a live registry). Deliberately has no default
     /// so every provider spells out its destructive flow.
     fn delete_session(&self, session_id: &str, force: bool) -> Result<(), DeleteError>;
+    /// Account-level usage windows (session/weekly), when the provider
+    /// records them somewhere we can read. None otherwise.
+    fn quota(&self) -> Option<ProviderQuota> {
+        None
+    }
     /// Drop any internal result caches so the next scan is fully fresh.
     /// Called on user-initiated refresh; mtime-keyed file caches don't need
     /// it (they self-invalidate), so the default is a no-op.

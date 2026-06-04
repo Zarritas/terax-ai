@@ -123,3 +123,19 @@ export function moveSession(
 ): Promise<void> {
   return invoke("agent_move_session", { sessionId, sourceCwd, destCwd });
 }
+
+export type QuotaWindow = {
+  label: "session" | "weekly";
+  usedPercent: number;
+  resetsAt: number | null;
+};
+
+export type ProviderQuota = {
+  provider: AgentProviderId;
+  windows: QuotaWindow[];
+  asOf: number | null;
+};
+
+export function listQuotas(): Promise<ProviderQuota[]> {
+  return invoke<ProviderQuota[]>("agent_quotas");
+}

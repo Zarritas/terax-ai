@@ -11,7 +11,7 @@ use crate::modules::agent_sessions::transfer::{
     self, ExportItem, ImportOutcome, ManifestSessionInfo,
 };
 use crate::modules::agent_sessions::types::{
-    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, SessionRef,
+    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, ProviderQuota, SessionRef,
 };
 
 /// Repeated UI refetches (watcher debounce, window focus) within this window
@@ -337,6 +337,20 @@ pub async fn agent_move_session(
         let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
         *cache = None;
         Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_quotas(app: AppHandle) -> Result<Vec<ProviderQuota>, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        Ok(state
+            .providers
+            .iter()
+            .filter(|p| p.detect())
+            .filter_map(|p| p.quota())
+            .collect())
     })
     .await
 }

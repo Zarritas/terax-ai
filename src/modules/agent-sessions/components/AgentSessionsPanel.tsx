@@ -53,6 +53,8 @@ import {
   searchSessions,
 } from "../lib/native";
 import {
+  contextColorClass,
+  formatRelativeFuture,
   groupByProviderWithFolders,
   matchesFilter,
   parseFilter,
@@ -116,6 +118,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const folders = useAgentSessionsStore((s) => s.folders);
   const applyFolders = useAgentSessionsStore((s) => s.applyFolders);
+  const quotas = useAgentSessionsStore((s) => s.quotas);
 
   // Wrap a pure folders transition: validation errors surface as toasts.
   const mutateFolders = useCallback(
@@ -523,6 +526,33 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                   >
                     {PROVIDER_LABEL[tree.provider] ?? tree.provider}
                   </span>
+                  {(() => {
+                    const quota = quotas.find(
+                      (q) => q.provider === tree.provider,
+                    );
+                    if (!quota) return null;
+                    return (
+                      <span className="flex shrink-0 items-center gap-1">
+                        {quota.windows.map((w) => (
+                          <span
+                            key={w.label}
+                            className={cn(
+                              "inline-flex items-center gap-0.5 rounded border border-border/60 bg-card px-1 text-[9px] font-semibold leading-4 tabular-nums",
+                              contextColorClass(w.usedPercent),
+                            )}
+                            title={`${w.label === "session" ? "Session (5h)" : "Weekly"} usage: ${Math.round(w.usedPercent)}%${
+                              w.resetsAt
+                                ? ` · resets ${formatRelativeFuture(w.resetsAt)}`
+                                : ""
+                            }`}
+                          >
+                            {w.label === "session" ? "S" : "W"}{" "}
+                            {Math.round(w.usedPercent)}%
+                          </span>
+                        ))}
+                      </span>
+                    );
+                  })()}
                   {tree.activeCount > 0 ? (
                     <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500">
                       {tree.activeCount}

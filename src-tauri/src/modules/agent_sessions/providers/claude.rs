@@ -18,7 +18,7 @@ use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, trun
 use crate::modules::agent_sessions::live;
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
 use crate::modules::agent_sessions::types::{
-    AgentSession, DeleteError, LiveAgentSession, PreviewTurn,
+    AgentSession, DeleteError, LiveAgentSession, PreviewTurn, ProviderQuota, QuotaWindow,
 };
 
 const HEADER_SCAN_LINES: usize = 80;
@@ -152,6 +152,37 @@ impl AgentProvider for ClaudeProvider {
     fn fts_content(&self, session_id: &str) -> Option<String> {
         let path = self.locate(session_id)?;
         extract::fts_text(&path, claude_turn)
+    }
+
+    /// Claude Code only hands account rate limits to the statusline at
+    /// runtime; a small statusline addition mirrors them to
+    /// `~/.claude/rate-limits-cache.json`, which this reads.
+    fn quota(&self) -> Option<ProviderQuota> {
+        let raw = std::fs::read_to_string(self.home.join("rate-limits-cache.json")).ok()?;
+        let data = serde_json::from_str::<Value>(&raw).ok()?;
+        let window = |key: &str, label: &str| -> Option<QuotaWindow> {
+            let w = data.get(key)?;
+            Some(QuotaWindow {
+                label: label.to_string(),
+                used_percent: w.get("used_percentage").and_then(Value::as_f64)?,
+                resets_at: w.get("resets_at").and_then(Value::as_u64),
+            })
+        };
+        let windows: Vec<QuotaWindow> = [
+            window("five_hour", "session"),
+            window("seven_day", "weekly"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if windows.is_empty() {
+            return None;
+        }
+        Some(ProviderQuota {
+            provider: "claude".to_string(),
+            windows,
+            as_of: data.get("updated_at").and_then(Value::as_f64),
+        })
     }
 
     /// Port of multi-claude's delete_session: jsonl + `<id>/` subagents
@@ -621,6 +652,30 @@ mod tests {
         let p = ClaudeProvider::new();
         assert_eq!(p.resume_argv("xyz"), vec!["claude", "--resume", "xyz"]);
         assert_eq!(p.new_session_argv(), vec!["claude"]);
+    }
+
+    #[test]
+    fn quota_reads_the_statusline_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".claude");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("rate-limits-cache.json"),
+            "{\"five_hour\":{\"used_percentage\":50,\"resets_at\":1780600000},\
+             \"seven_day\":{\"used_percentage\":25,\"resets_at\":1780900000},\
+             \"updated_at\":1780568594.3}",
+        )
+        .unwrap();
+        let provider = ClaudeProvider::with_home(home.clone());
+        let quota = provider.quota().unwrap();
+        assert_eq!(quota.windows.len(), 2);
+        assert_eq!(quota.windows[0].label, "session");
+        assert_eq!(quota.windows[0].used_percent, 50.0);
+        assert_eq!(quota.windows[1].label, "weekly");
+        assert_eq!(quota.windows[1].resets_at, Some(1_780_900_000));
+        // Missing cache -> None.
+        std::fs::remove_file(home.join("rate-limits-cache.json")).unwrap();
+        assert!(provider.quota().is_none());
     }
 
     #[test]

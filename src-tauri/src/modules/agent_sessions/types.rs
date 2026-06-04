@@ -91,3 +91,25 @@ pub struct SessionRef {
     pub provider: String,
     pub session_id: String,
 }
+
+/// One rolling rate-limit window of a provider account.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaWindow {
+    /// "session" (the ~5h window) or "weekly".
+    pub label: String,
+    pub used_percent: f64,
+    /// Unix seconds when the window resets, when known.
+    pub resets_at: Option<u64>,
+}
+
+/// Account-level usage availability for one provider.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuota {
+    pub provider: String,
+    pub windows: Vec<QuotaWindow>,
+    /// Unix seconds of the snapshot these numbers come from (cache mtime /
+    /// rollout mtime); None when truly live.
+    pub as_of: Option<f64>,
+}

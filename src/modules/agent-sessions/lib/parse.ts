@@ -430,3 +430,17 @@ export function contextColorClass(percentUsed: number): string {
   if (percentUsed >= 50) return "text-amber-500";
   return "text-emerald-500";
 }
+
+/** "in 35m", "in 3h", "in 2d" — for quota reset countdowns. */
+export function formatRelativeFuture(
+  unixSecs: number,
+  nowMs = Date.now(),
+): string {
+  const delta = Math.max(0, Math.floor(unixSecs - nowMs / 1000));
+  if (delta < 60) return "now";
+  const mins = Math.ceil(delta / 60);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.round(delta / 3600);
+  if (hours < 48) return `in ${hours}h`;
+  return `in ${Math.round(delta / 86_400)}d`;
+}

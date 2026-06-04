@@ -11,6 +11,7 @@ import {
   contextColorClass,
   contextPercent,
   formatBytes,
+  formatRelativeFuture,
   formatRelativeTime,
   formatTokens,
   groupByProject,
@@ -226,6 +227,17 @@ describe("context usage helpers", () => {
     expect(contextColorClass(55)).toBe("text-amber-500");
     expect(contextColorClass(80)).toBe("text-orange-500");
     expect(contextColorClass(95)).toBe("text-red-500");
+  });
+});
+
+describe("formatRelativeFuture", () => {
+  const now = 1_780_000_000_000;
+  it("counts down compactly", () => {
+    expect(formatRelativeFuture(now / 1000 + 30, now)).toBe("now");
+    expect(formatRelativeFuture(now / 1000 + 35 * 60, now)).toBe("in 35m");
+    expect(formatRelativeFuture(now / 1000 + 3 * 3600, now)).toBe("in 3h");
+    expect(formatRelativeFuture(now / 1000 + 5 * 86_400, now)).toBe("in 5d");
+    expect(formatRelativeFuture(now / 1000 - 100, now)).toBe("now");
   });
 });
 
