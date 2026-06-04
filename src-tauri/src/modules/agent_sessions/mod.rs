@@ -10,5 +10,6 @@ pub mod fts;
 pub mod live;
 pub mod provider;
 pub mod providers;
+pub mod service_status;
 pub mod transfer;
 pub mod types;

@@ -1,4 +1,5 @@
 import {
+  Activity01Icon,
   Add01Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -42,8 +43,13 @@ import {
   parseTagList,
   setMetadata,
 } from "../lib/metadata";
-import type { AgentProviderId, AgentSession } from "../lib/native";
+import type {
+  AgentProviderId,
+  AgentProviderInfo,
+  AgentSession,
+} from "../lib/native";
 import {
+  compactSession,
   deleteSession,
   exportSessions,
   importSessions,
@@ -53,16 +59,20 @@ import {
   searchSessions,
 } from "../lib/native";
 import {
+  contextColorClass,
+  formatRelativeFuture,
   groupByProviderWithFolders,
   matchesFilter,
   parseFilter,
   safeFilename,
+  serviceIndicatorClass,
   sessionLabel,
 } from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 import { CleanupDialog } from "./CleanupDialog";
 import { type FolderDialogState, FolderDialogs } from "./FolderDialogs";
+import { NewSessionDialog } from "./NewSessionDialog";
 import { type DialogState, SessionDialogs } from "./SessionDialogs";
 import {
   type PreviewState,
@@ -114,8 +124,13 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const [transferDialog, setTransferDialog] =
     useState<TransferDialogState>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const [newSessionProvider, setNewSessionProvider] =
+    useState<AgentProviderInfo | null>(null);
+  const [activeOnly, setActiveOnly] = useState(false);
   const folders = useAgentSessionsStore((s) => s.folders);
   const applyFolders = useAgentSessionsStore((s) => s.applyFolders);
+  const quotas = useAgentSessionsStore((s) => s.quotas);
+  const serviceStatus = useAgentSessionsStore((s) => s.serviceStatus);
 
   // Wrap a pure folders transition: validation errors surface as toasts.
   const mutateFolders = useCallback(
@@ -133,6 +148,16 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     const cwds = new Set<string>();
     for (const s of sessions) {
       if (s.provider === "claude" && s.cwd) cwds.add(s.cwd);
+    }
+    return [...cwds].sort();
+  }, [sessions]);
+
+  // Candidates for "new session": any cwd a session of any provider has used —
+  // starting e.g. a Codex session on a project known only from Claude is fine.
+  const knownCwds = useMemo(() => {
+    const cwds = new Set<string>();
+    for (const s of sessions) {
+      if (s.cwd) cwds.add(s.cwd);
     }
     return [...cwds].sort();
   }, [sessions]);
@@ -307,6 +332,53 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     [updateMetadata],
   );
 
+  const handleCompact = useCallback(
+    (session: AgentSession) => {
+      // Live in a Terax tab: type the slash command into its PTY.
+      if (bridge.compactLive(session)) {
+        toast.success("Compact command sent to the running session");
+        return;
+      }
+      if (session.isActive) {
+        toast.error(
+          "Session is running in another terminal — compact it there",
+        );
+        return;
+      }
+      if (session.provider !== "claude") {
+        toast.error(
+          "Headless compaction is only available for Claude sessions",
+        );
+        return;
+      }
+      const key = `${session.provider}:${session.id}`;
+      // Read fresh from the store: rows render the badge off this same set.
+      const { compactingIds, setCompacting } = useAgentSessionsStore.getState();
+      if (compactingIds.has(key)) {
+        toast.info("This session is already being compacted");
+        return;
+      }
+      setCompacting(key, true);
+      const label = sessionLabel(session, metadata[key]);
+      toast.promise(
+        compactSession(session.provider, session.id, session.cwd)
+          .finally(() =>
+            useAgentSessionsStore.getState().setCompacting(key, false),
+          )
+          .then(() => refresh(true)),
+        {
+          loading: `Compacting "${label}"… (this can take a couple of minutes)`,
+          success: "Session compacted",
+          error: (err) =>
+            String(err).includes("ACTIVE")
+              ? "The session just went live — compact it from its terminal"
+              : String(err),
+        },
+      );
+    },
+    [bridge, metadata, refresh],
+  );
+
   const handleDelete = useCallback(
     (session: AgentSession, force: boolean) => {
       deleteSession(session.provider, session.id, force)
@@ -333,6 +405,17 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
 
   const handleRowAction = useCallback(
     (session: AgentSession, action: RowAction) => {
+      // The headless compactor isn't in the live registry, so the backend
+      // ACTIVE guard can't see it — block file-moving actions here.
+      if (
+        (action.kind === "delete" || action.kind === "move") &&
+        useAgentSessionsStore
+          .getState()
+          .compactingIds.has(`${session.provider}:${session.id}`)
+      ) {
+        toast.info("Compaction in progress — try again when it finishes");
+        return;
+      }
       switch (action.kind) {
         case "rename":
           setDialog({ kind: "rename", session });
@@ -345,6 +428,9 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           break;
         case "preview":
           openPreview(session);
+          break;
+        case "compact":
+          handleCompact(session);
           break;
         case "export":
           handleExport(
@@ -366,7 +452,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           break;
       }
     },
-    [persistMeta, openPreview, handleExport, metadata],
+    [persistMeta, openPreview, handleCompact, handleExport, metadata],
   );
 
   const hasFilter = filter.trim().length > 0 || searchIds !== null;
@@ -374,18 +460,31 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     const parsed = parseFilter(filter);
     const visible = sessions.filter(
       (s: AgentSession) =>
+        (!activeOnly || s.isActive) &&
         (searchIds === null || searchIds.has(`${s.provider}:${s.id}`)) &&
         matchesFilter(s, parsed, metadata[`${s.provider}:${s.id}`]),
     );
-    return groupByProviderWithFolders(visible, folders, hasFilter);
-  }, [sessions, filter, metadata, searchIds, folders, hasFilter]);
+    return groupByProviderWithFolders(
+      visible,
+      folders,
+      hasFilter || activeOnly,
+    );
+  }, [sessions, filter, metadata, searchIds, folders, hasFilter, activeOnly]);
 
   const treeCallbacks: TreeCallbacks = useMemo(
     () => ({
       collapsed,
       toggleCollapsed,
       metadata,
-      onResume: bridge.resumeSession,
+      // Resuming would race the headless compaction over one session log.
+      onResume: (session) => {
+        const key = `${session.provider}:${session.id}`;
+        if (useAgentSessionsStore.getState().compactingIds.has(key)) {
+          toast.info("Compaction in progress — resume when it finishes");
+          return;
+        }
+        bridge.resumeSession(session);
+      },
       onRowAction: handleRowAction,
       onMoveProjectToFolder: (provider, cwd) =>
         setFolderDialog({ kind: "move-to-folder", provider, cwd }),
@@ -440,13 +539,27 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                 {startable.map((provider) => (
                   <DropdownMenuItem
                     key={provider.id}
-                    onSelect={() => bridge.newSession(provider, workspaceCwd)}
+                    onSelect={() => setNewSessionProvider(provider)}
                   >
                     New {provider.displayName} session
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            <button
+              type="button"
+              aria-label="Show active sessions only"
+              aria-pressed={activeOnly}
+              onClick={() => setActiveOnly((v) => !v)}
+              className={cn(
+                "flex size-6 cursor-pointer items-center justify-center rounded-md transition-colors",
+                activeOnly
+                  ? "bg-emerald-500/15 text-emerald-500"
+                  : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+              )}
+            >
+              <HugeiconsIcon icon={Activity01Icon} size={13} />
+            </button>
             <button
               type="button"
               aria-label="Import sessions from archive"
@@ -523,9 +636,64 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                   >
                     {PROVIDER_LABEL[tree.provider] ?? tree.provider}
                   </span>
-                  {tree.activeCount > 0 ? (
-                    <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500">
-                      {tree.activeCount}
+                  {(() => {
+                    const health = serviceStatus.find(
+                      (s) => s.provider === tree.provider,
+                    );
+                    if (!health || health.indicator === "unknown") return null;
+                    return (
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          serviceIndicatorClass(health.indicator),
+                        )}
+                        title={`Service status: ${health.description}`}
+                      />
+                    );
+                  })()}
+                  {(() => {
+                    const quota = quotas.find(
+                      (q) => q.provider === tree.provider,
+                    );
+                    if (!quota) return null;
+                    return (
+                      <span className="flex shrink-0 items-center gap-1">
+                        {quota.windows.map((w) => (
+                          <span
+                            key={w.label}
+                            className={cn(
+                              "inline-flex items-center gap-0.5 rounded border border-border/60 bg-card px-1 text-[9px] font-semibold leading-4 tabular-nums",
+                              contextColorClass(w.usedPercent),
+                            )}
+                            title={`${w.label === "session" ? "Session (5h)" : "Weekly"} usage: ${Math.round(w.usedPercent)}%${
+                              w.resetsAt
+                                ? ` · resets ${formatRelativeFuture(w.resetsAt)}`
+                                : ""
+                            }`}
+                          >
+                            {w.label === "session" ? "S" : "W"}{" "}
+                            {Math.round(w.usedPercent)}%
+                          </span>
+                        ))}
+                      </span>
+                    );
+                  })()}
+                  {tree.workingCount > 0 ? (
+                    <span
+                      className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center gap-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500"
+                      title={`${tree.workingCount} session(s) working`}
+                    >
+                      <span className="size-1 animate-pulse rounded-full bg-emerald-500" />
+                      {tree.workingCount}
+                    </span>
+                  ) : null}
+                  {tree.waitingCount > 0 ? (
+                    <span
+                      className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center gap-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-1 text-[9px] font-semibold tabular-nums text-amber-500"
+                      title={`${tree.waitingCount} session(s) waiting for input`}
+                    >
+                      <span className="size-1 rounded-full bg-amber-500" />
+                      {tree.waitingCount}
                     </span>
                   ) : null}
                   <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
@@ -603,6 +771,13 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           preview={preview}
           metadata={metadata}
           onClose={() => setPreview(null)}
+        />
+        <NewSessionDialog
+          provider={newSessionProvider}
+          cwds={knownCwds}
+          workspaceCwd={workspaceCwd}
+          onClose={() => setNewSessionProvider(null)}
+          onCreate={(provider, cwd) => bridge.newSession(provider, cwd)}
         />
         <TransferDialogs
           dialog={transferDialog}

@@ -3,6 +3,7 @@ import type { AgentProviderInfo, AgentSession } from "./native";
 import {
   type AgentSessionsBridgeDeps,
   argvToCommand,
+  compactCommand,
   createAgentSessionsBridge,
 } from "./resume";
 
@@ -17,6 +18,12 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     sizeBytes: null,
     lastActivity: 0,
     isActive: false,
+    contextTokens: null,
+    contextWindow: null,
+    model: null,
+    startedAt: null,
+    costUsd: null,
+    liveStatus: null,
     resumeArgv: ["claude", "--resume", "sid-1"],
     ...overrides,
   };
@@ -154,5 +161,50 @@ describe("newSession", () => {
     bridge.resumeSession(session({}));
     await flush();
     expect(deps.writes).toEqual([[11, "claude --resume sid-1\r"]]);
+  });
+});
+
+describe("compactCommand", () => {
+  it("maps gemini to /compress and everything else to /compact", () => {
+    expect(compactCommand("gemini")).toBe("/compress");
+    for (const p of ["claude", "codex", "opencode"]) {
+      expect(compactCommand(p)).toBe("/compact");
+    }
+  });
+});
+
+describe("compactLive", () => {
+  let deps: ReturnType<typeof makeDeps>;
+  beforeEach(() => {
+    deps = makeDeps();
+  });
+
+  it("returns false for sessions not managed by Terax", () => {
+    const bridge = createAgentSessionsBridge(deps);
+    expect(bridge.compactLive(session({ isActive: true }))).toBe(false);
+    expect(deps.writeToSession).not.toHaveBeenCalled();
+  });
+
+  it("types the compact command into the managed PTY and focuses its tab", () => {
+    deps.getManagedBySessionId = vi.fn(() => ({ tabId: 3, leafId: 4 }));
+    const bridge = createAgentSessionsBridge(deps);
+    expect(bridge.compactLive(session({ isActive: true }))).toBe(true);
+    expect(deps.writes).toEqual([[4, "/compact\r"]]);
+    expect(deps.focusTab).toHaveBeenCalledWith({ tabId: 3, leafId: 4 });
+  });
+
+  it("uses /compress for live gemini sessions", () => {
+    deps.getManagedBySessionId = vi.fn(() => ({ tabId: 3, leafId: 4 }));
+    const bridge = createAgentSessionsBridge(deps);
+    bridge.compactLive(session({ provider: "gemini", isActive: true }));
+    expect(deps.writes).toEqual([[4, "/compress\r"]]);
+  });
+
+  it("reports failure when the PTY write fails", () => {
+    deps.getManagedBySessionId = vi.fn(() => ({ tabId: 3, leafId: 4 }));
+    deps.writeToSession = vi.fn(() => false);
+    const bridge = createAgentSessionsBridge(deps);
+    expect(bridge.compactLive(session({}))).toBe(false);
+    expect(deps.focusTab).not.toHaveBeenCalled();
   });
 });

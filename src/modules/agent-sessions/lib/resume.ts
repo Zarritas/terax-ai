@@ -38,7 +38,18 @@ export type AgentSessionsBridgeDeps = {
 export type AgentSessionsBridge = {
   resumeSession: (session: AgentSession) => void;
   newSession: (provider: AgentProviderInfo, cwd: string | null) => void;
+  /**
+   * Type the provider's compact command into the session's PTY when Terax
+   * runs it in a tab. Returns false when the session isn't managed here
+   * (caller falls back to headless compaction or an explanatory notice).
+   */
+  compactLive: (session: AgentSession) => boolean;
 };
+
+/** Slash command that compacts the context in each provider's TUI. */
+export function compactCommand(provider: string): string {
+  return provider === "gemini" ? "/compress" : "/compact";
+}
 
 /** Join argv into a shell line. Quotes any arg with characters the shell
  * would interpret; session ids and binaries are clean, so this is a guard. */
@@ -117,6 +128,16 @@ export function createAgentSessionsBridge(
         null,
         provider.id,
       );
+    },
+
+    compactLive: (session) => {
+      const existing = deps.getManagedBySessionId(session.id);
+      if (!existing) return false;
+      const line = `${compactCommand(session.provider)}\r`;
+      if (!deps.writeToSession(existing.leafId, line)) return false;
+      // Focus so the user sees the compaction running (and any prompt).
+      deps.focusTab(existing);
+      return true;
     },
   };
 }

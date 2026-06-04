@@ -8,15 +8,23 @@ import {
 import type { AgentSession } from "./native";
 import {
   colorClasses,
+  contextColorClass,
+  contextPercent,
   formatBytes,
+  formatCost,
+  formatDuration,
+  formatRelativeFuture,
   formatRelativeTime,
+  formatTokens,
   groupByProject,
   groupByProviderThenProject,
   groupByProviderWithFolders,
   matchesFilter,
   parseFilter,
   safeFilename,
+  serviceIndicatorClass,
   sessionLabel,
+  shortModelName,
 } from "./parse";
 
 const match = (
@@ -36,6 +44,12 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     sizeBytes: null,
     lastActivity: 0,
     isActive: false,
+    contextTokens: null,
+    contextWindow: null,
+    model: null,
+    startedAt: null,
+    costUsd: null,
+    liveStatus: null,
     resumeArgv: ["claude", "--resume", "abc-123"],
     ...overrides,
   };
@@ -94,6 +108,18 @@ describe("matchesFilter", () => {
     expect(match(s, "tag:bug,acme", meta)).toBe(true);
     expect(match(s, "tag:bug,otro", meta)).toBe(false);
     expect(match(s, "tag:bug")).toBe(false); // sin meta no hay tags
+  });
+
+  it("is: predicate filters by live state", () => {
+    const working = session({ isActive: true, liveStatus: "busy" });
+    const waiting = session({ isActive: true, liveStatus: "idle" });
+    const inactive = session({});
+    expect(match(working, "is:active")).toBe(true);
+    expect(match(inactive, "is:active")).toBe(false);
+    expect(match(working, "is:working")).toBe(true);
+    expect(match(waiting, "is:working")).toBe(false);
+    expect(match(waiting, "is:waiting")).toBe(true);
+    expect(match(working, "is:waiting")).toBe(false);
   });
 
   it("branch:/id:/path: predicates filter on their fields", () => {
@@ -208,6 +234,69 @@ describe("safeFilename", () => {
   });
 });
 
+describe("context usage helpers", () => {
+  it("computes clamped percentages", () => {
+    expect(contextPercent(857_000, 1_000_000)).toBe(86);
+    expect(contextPercent(50_000, 200_000)).toBe(25);
+    expect(contextPercent(2_000_000, 1_000_000)).toBe(100);
+    expect(contextPercent(10, 0)).toBe(0);
+  });
+
+  it("escalates color as context runs out", () => {
+    expect(contextColorClass(10)).toBe("text-emerald-500");
+    expect(contextColorClass(55)).toBe("text-amber-500");
+    expect(contextColorClass(80)).toBe("text-orange-500");
+    expect(contextColorClass(95)).toBe("text-red-500");
+  });
+});
+
+describe("formatRelativeFuture", () => {
+  const now = 1_780_000_000_000;
+  it("counts down compactly", () => {
+    expect(formatRelativeFuture(now / 1000 + 30, now)).toBe("now");
+    expect(formatRelativeFuture(now / 1000 + 35 * 60, now)).toBe("in 35m");
+    expect(formatRelativeFuture(now / 1000 + 3 * 3600, now)).toBe("in 3h");
+    expect(formatRelativeFuture(now / 1000 + 5 * 86_400, now)).toBe("in 5d");
+    expect(formatRelativeFuture(now / 1000 - 100, now)).toBe("now");
+  });
+});
+
+describe("session telemetry formatters", () => {
+  it("formats durations", () => {
+    expect(formatDuration(45)).toBe("<1m");
+    expect(formatDuration(45 * 60)).toBe("45m");
+    expect(formatDuration(3 * 3600 + 20 * 60)).toBe("3h 20m");
+    expect(formatDuration(2 * 86_400 + 4 * 3600)).toBe("2d 4h");
+  });
+
+  it("formats costs", () => {
+    expect(formatCost(0.04)).toBe("$0.04");
+    expect(formatCost(1.234)).toBe("$1.23");
+    expect(formatCost(12.6)).toBe("$13");
+  });
+
+  it("shortens model names", () => {
+    expect(shortModelName("claude-opus-4-8")).toBe("opus");
+    expect(shortModelName("claude-sonnet-4-6")).toBe("sonnet");
+    expect(shortModelName("claude-haiku-4-5-20251001")).toBe("haiku");
+  });
+
+  it("maps service indicators to dot colors", () => {
+    expect(serviceIndicatorClass("none")).toBe("bg-emerald-500");
+    expect(serviceIndicatorClass("critical")).toBe("bg-red-500");
+    expect(serviceIndicatorClass("unknown")).toBe("bg-zinc-500");
+  });
+});
+
+describe("formatTokens", () => {
+  it("compacts magnitudes", () => {
+    expect(formatTokens(857)).toBe("857");
+    expect(formatTokens(85_700)).toBe("86k");
+    expect(formatTokens(857_244)).toBe("857k");
+    expect(formatTokens(1_230_000)).toBe("1.2M");
+  });
+});
+
 describe("formatBytes", () => {
   it("scales units", () => {
     expect(formatBytes(512)).toBe("512 B");
@@ -230,6 +319,26 @@ describe("groupByProviderWithFolders", () => {
     session({ id: "s3", cwd: "/w/b", lastActivity: 300 }),
     session({ id: "x1", provider: "codex", cwd: "/w/a", lastActivity: 50 }),
   ];
+
+  it("aggregates working/waiting counts up the folder tree", () => {
+    let f = emptyFoldersState();
+    f = assignProject(f, "claude:/w/a", "Trabajo/Gextia");
+    const tree = groupByProviderWithFolders(
+      [
+        session({ id: "s1", cwd: "/w/a", isActive: true, liveStatus: "busy" }),
+        session({ id: "s2", cwd: "/w/a", isActive: true, liveStatus: "idle" }),
+        session({ id: "s3", cwd: "/w/a" }),
+      ],
+      f,
+      false,
+    )[0];
+    const trabajo = tree.folderTree[0];
+    expect(trabajo.workingCount).toBe(1);
+    expect(trabajo.waitingCount).toBe(1);
+    expect(trabajo.activeCount).toBe(2);
+    expect(tree.workingCount).toBe(1);
+    expect(tree.waitingCount).toBe(1);
+  });
 
   it("nests assigned projects under their folder tree", () => {
     const [claude, codex] = groupByProviderWithFolders(

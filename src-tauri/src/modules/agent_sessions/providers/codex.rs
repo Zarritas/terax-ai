@@ -16,7 +16,9 @@ use serde_json::Value;
 
 use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, truncate_title};
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
-use crate::modules::agent_sessions::types::{AgentSession, DeleteError, PreviewTurn};
+use crate::modules::agent_sessions::types::{
+    AgentSession, DeleteError, PreviewTurn, ProviderQuota, QuotaWindow,
+};
 
 const HEADER_SCAN_LINES: usize = 40;
 
@@ -127,6 +129,61 @@ impl AgentProvider for CodexProvider {
     fn fts_content(&self, session_id: &str) -> Option<String> {
         let path = self.locate(session_id)?;
         extract::fts_text(&path, codex_turn)
+    }
+
+    /// Codex stamps account rate limits into every token_count event; read
+    /// the freshest rollout's latest populated one. Windows map by their
+    /// minute span (~300 = the rolling session window, ~10080 = weekly).
+    fn quota(&self) -> Option<ProviderQuota> {
+        let mut rollouts = collect_rollouts(&self.sessions_dir());
+        rollouts.sort_by(|a, b| {
+            mtime_secs(b)
+                .unwrap_or(0.0)
+                .total_cmp(&mtime_secs(a).unwrap_or(0.0))
+        });
+        for rollout in rollouts.iter().take(5) {
+            let Some(line) = extract::tail_lines(rollout, 60)
+                .into_iter()
+                .rev()
+                .find(|l| l.contains("\"used_percent\""))
+            else {
+                continue;
+            };
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(limits) = event.get("payload").and_then(|p| p.get("rate_limits")) else {
+                continue;
+            };
+            let mut windows = Vec::new();
+            for key in ["primary", "secondary"] {
+                let Some(w) = limits.get(key).filter(|w| !w.is_null()) else {
+                    continue;
+                };
+                let Some(used) = w.get("used_percent").and_then(Value::as_f64) else {
+                    continue;
+                };
+                let minutes = w.get("window_minutes").and_then(Value::as_u64).unwrap_or(0);
+                windows.push(QuotaWindow {
+                    label: if minutes > 0 && minutes <= 600 {
+                        "session".to_string()
+                    } else {
+                        "weekly".to_string()
+                    },
+                    used_percent: used,
+                    resets_at: w.get("resets_at").and_then(Value::as_u64),
+                });
+            }
+            if !windows.is_empty() {
+                windows.sort_by_key(|w| w.label.clone()); // session before weekly
+                return Some(ProviderQuota {
+                    provider: "codex".to_string(),
+                    windows,
+                    as_of: mtime_secs(rollout),
+                });
+            }
+        }
+        None
     }
 
     /// Codex "delete" archives: the rollout moves to archived_sessions/
@@ -257,6 +314,7 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
     }
     let payload = head.get("payload")?;
     let id = payload.get("id").and_then(Value::as_str)?.to_string();
+    let context_window = payload.get("model_context_window").and_then(Value::as_u64);
     let cwd = payload
         .get("cwd")
         .and_then(Value::as_str)
@@ -293,8 +351,41 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
         size_bytes: Some(meta.len()),
         last_activity: mtime_secs(rollout).unwrap_or(0.0),
         is_active: false,
+        live_status: None,
+        context_tokens: latest_context_tokens(rollout),
+        context_window,
+        model: None,
+        started_at: None,
+        cost_usd: None,
         resume_argv: Vec::new(),
     })
+}
+
+/// Latest token_count event from the rollout tail, parsed defensively: the
+/// payload `info` is often null (short exec sessions) and its populated
+/// shape varies across codex versions, so any known total field wins.
+fn latest_context_tokens(rollout: &Path) -> Option<u64> {
+    let line = extract::tail_lines(rollout, 40)
+        .into_iter()
+        .rev()
+        .find(|l| l.contains("\"token_count\""))?;
+    let event = serde_json::from_str::<Value>(&line).ok()?;
+    let info = event.get("payload")?.get("info")?;
+    for source in ["total_token_usage", "last_token_usage"] {
+        if let Some(usage) = info.get(source) {
+            let field = |n: &str| usage.get(n).and_then(Value::as_u64).unwrap_or(0);
+            let total = field("input_tokens") + field("cached_input_tokens");
+            if total > 0 {
+                return Some(total);
+            }
+            if let Some(t) = usage.get("total_tokens").and_then(Value::as_u64) {
+                if t > 0 {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn mtime_secs(path: &Path) -> Option<f64> {
@@ -411,6 +502,28 @@ mod tests {
         assert!(provider.locate("0199-arch").is_none());
         // Idempotent: nothing left to archive.
         provider.delete_session("0199-arch", false).unwrap();
+    }
+
+    #[test]
+    fn quota_reads_latest_rate_limits_from_rollouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let day = tmp.path().join("sessions/2026/06/04");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-06-04T10-00-00-0199-qqqq.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"0199-qqqq\",\"cwd\":\"/w\"}}\n\
+             {\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"rate_limits\":\
+             {\"primary\":{\"used_percent\":52.0,\"window_minutes\":10080,\"resets_at\":1779690525},\
+             \"secondary\":{\"used_percent\":12.5,\"window_minutes\":300,\"resets_at\":1779600000}}}}\n",
+        )
+        .unwrap();
+        let provider = CodexProvider::with_home(tmp.path().to_path_buf());
+        let quota = provider.quota().unwrap();
+        assert_eq!(quota.windows.len(), 2);
+        assert_eq!(quota.windows[0].label, "session");
+        assert_eq!(quota.windows[0].used_percent, 12.5);
+        assert_eq!(quota.windows[1].label, "weekly");
+        assert_eq!(quota.windows[1].used_percent, 52.0);
     }
 
     #[test]

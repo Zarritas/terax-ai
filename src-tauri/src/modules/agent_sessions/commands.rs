@@ -4,14 +4,16 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 use crate::modules::agent_sessions::fts::FtsIndex;
-use crate::modules::agent_sessions::provider::{binary_in_path, AgentProvider};
+use crate::modules::agent_sessions::provider::{binary_in_path, resolve_binary, AgentProvider};
 use crate::modules::agent_sessions::providers::all_providers;
 use crate::modules::agent_sessions::providers::claude::encode_cwd;
+use crate::modules::agent_sessions::service_status::ServiceStatusCache;
 use crate::modules::agent_sessions::transfer::{
     self, ExportItem, ImportOutcome, ManifestSessionInfo,
 };
 use crate::modules::agent_sessions::types::{
-    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, SessionRef,
+    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, ProviderQuota, ServiceStatus,
+    SessionRef,
 };
 
 /// Repeated UI refetches (watcher debounce, window focus) within this window
@@ -36,6 +38,8 @@ pub struct AgentSessionsState {
     /// otherwise both see stale mtimes and read the same files twice
     /// (observed as two overlapping "fts indexed" passes per scan burst).
     index_lock: Mutex<()>,
+    /// Hosted-service health, cached for a few minutes.
+    service_status: ServiceStatusCache,
 }
 
 enum FtsState {
@@ -58,6 +62,7 @@ impl AgentSessionsState {
             scan_lock: Mutex::new(()),
             fts: Mutex::new(FtsState::Uninitialized),
             index_lock: Mutex::new(()),
+            service_status: ServiceStatusCache::default(),
         }
     }
 
@@ -206,6 +211,112 @@ pub async fn agent_delete_session(
     .await
 }
 
+/// Compaction is an LLM summarization pass over the whole session — big logs
+/// take minutes, not seconds.
+const COMPACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[tauri::command]
+pub async fn agent_compact_session(
+    provider: String,
+    session_id: String,
+    cwd: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        let p = state
+            .providers
+            .iter()
+            .find(|p| p.id() == provider)
+            .ok_or_else(|| format!("unknown provider {provider}"))?;
+        // Two processes over one session log would race; a live session
+        // compacts from its own terminal instead.
+        if p.live_sessions()
+            .iter()
+            .any(|l| l.session_id == session_id)
+        {
+            return Err("ACTIVE".to_string());
+        }
+        let argv = p
+            .compact_argv(&session_id)
+            .ok_or_else(|| "UNSUPPORTED".to_string())?;
+        // No scan_lock here: the run takes minutes and scans are read-only —
+        // holding it would freeze every panel refresh until compaction ends.
+        run_to_completion(&argv, cwd.as_deref(), COMPACT_TIMEOUT)?;
+        let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
+        *cache = None;
+        Ok(())
+    })
+    .await
+}
+
+/// Run `argv` headless under `cwd` (falling back to home when it's gone) and
+/// wait for it with a hard timeout; on timeout the child is killed. Stderr is
+/// drained on a helper thread so a chatty CLI can't deadlock the pipe.
+fn run_to_completion(
+    argv: &[String],
+    cwd: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::io::Read;
+
+    let (bin, args) = argv.split_first().ok_or("empty argv")?;
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let workdir = cwd
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or(home);
+    let mut cmd = std::process::Command::new(
+        resolve_binary(bin).unwrap_or_else(|| std::path::PathBuf::from(bin)),
+    );
+    cmd.args(args)
+        .current_dir(workdir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    crate::modules::proc::hide_console(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("{bin}: {e}"))?;
+
+    let stderr = child.stderr.take();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut err) = stderr {
+            let _ = err.read_to_string(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stderr = rx.recv().unwrap_or_default();
+                let _ = reader.join();
+                if status.success() {
+                    return Ok(());
+                }
+                let detail = stderr.trim();
+                return Err(if detail.is_empty() {
+                    format!("{bin} exited with {status}")
+                } else {
+                    format!("{bin}: {detail}")
+                });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = reader.join();
+                    return Err(format!("{bin} timed out after {}s", timeout.as_secs()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn agent_session_preview(
     provider: String,
@@ -337,6 +448,29 @@ pub async fn agent_move_session(
         let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
         *cache = None;
         Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_service_status(app: AppHandle) -> Result<Vec<ServiceStatus>, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        Ok(state.service_status.get())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_quotas(app: AppHandle) -> Result<Vec<ProviderQuota>, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        Ok(state
+            .providers
+            .iter()
+            .filter(|p| p.detect())
+            .filter_map(|p| p.quota())
+            .collect())
     })
     .await
 }
@@ -473,6 +607,12 @@ mod tests {
                     size_bytes: None,
                     last_activity: 100.0,
                     is_active: false,
+                    context_tokens: None,
+                    context_window: None,
+                    model: None,
+                    started_at: None,
+                    cost_usd: None,
+                    live_status: None,
                     resume_argv: Vec::new(),
                 },
                 AgentSession {
@@ -485,6 +625,12 @@ mod tests {
                     size_bytes: None,
                     last_activity: 200.0,
                     is_active: false,
+                    context_tokens: None,
+                    context_window: None,
+                    model: None,
+                    started_at: None,
+                    cost_usd: None,
+                    live_status: None,
                     resume_argv: Vec::new(),
                 },
             ])

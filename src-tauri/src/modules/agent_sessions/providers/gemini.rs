@@ -239,6 +239,12 @@ fn build_session(chat_file: &Path, cwd: Option<String>) -> Option<AgentSession> 
         size_bytes: Some(meta.len()),
         last_activity: mtime_secs(chat_file).unwrap_or(0.0),
         is_active: false,
+        context_tokens: None,
+        context_window: None,
+        model: None,
+        started_at: None,
+        cost_usd: None,
+        live_status: None,
         resume_argv: Vec::new(),
     })
 }

@@ -236,6 +236,12 @@ fn parse_session_list(raw: &str) -> Result<Vec<AgentSession>, String> {
                 size_bytes: None,
                 last_activity: last_ms / 1000.0,
                 is_active: false,
+                context_tokens: None,
+                context_window: None,
+                model: None,
+                started_at: None,
+                cost_usd: None,
+                live_status: None,
                 resume_argv: Vec::new(),
             }
         })

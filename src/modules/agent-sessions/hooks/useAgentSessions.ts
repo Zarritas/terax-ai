@@ -6,7 +6,13 @@ import {
 } from "@/modules/explorer/lib/watch";
 import { loadFolders } from "../lib/folders";
 import { loadAllMetadata } from "../lib/metadata";
-import { listLiveSessions, listProviders, listSessions } from "../lib/native";
+import {
+  listLiveSessions,
+  listProviders,
+  listQuotas,
+  listServiceStatus,
+  listSessions,
+} from "../lib/native";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 
 const REFRESH_DEBOUNCE_MS = 400;
@@ -28,6 +34,8 @@ export function useAgentSessions(home: string | null) {
     applyLiveSessions,
     setAllMetadata,
     setFolders,
+    setQuotas,
+    setServiceStatus,
   } = useAgentSessionsStore.getState();
   const scanDebounceRef = useRef<number | null>(null);
   const liveDebounceRef = useRef<number | null>(null);
@@ -43,13 +51,28 @@ export function useAgentSessions(home: string | null) {
         setProviders(providers);
         setSessions(sessions);
         setError(null);
+        // Quota and health badges are best-effort; never fail the refresh
+        // over them (the status fetch hits external pages, cached 5 min).
+        void listQuotas()
+          .then(setQuotas)
+          .catch(() => {});
+        void listServiceStatus()
+          .then(setServiceStatus)
+          .catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setLoading(false);
       }
     },
-    [setProviders, setSessions, setLoading, setError],
+    [
+      setProviders,
+      setSessions,
+      setLoading,
+      setError,
+      setQuotas,
+      setServiceStatus,
+    ],
   );
 
   const refreshLiveBadges = useCallback(async () => {

@@ -7,7 +7,6 @@
 // re-encoding matches the dir name (sessions moved across cwds record a stale
 // first cwd and would otherwise flip the project identity).
 
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -18,7 +17,7 @@ use crate::modules::agent_sessions::extract::{self, strip_command_wrappers, trun
 use crate::modules::agent_sessions::live;
 use crate::modules::agent_sessions::provider::{AgentProvider, FileScanCache};
 use crate::modules::agent_sessions::types::{
-    AgentSession, DeleteError, LiveAgentSession, PreviewTurn,
+    AgentSession, DeleteError, LiveAgentSession, PreviewTurn, ProviderQuota, QuotaWindow,
 };
 
 const HEADER_SCAN_LINES: usize = 80;
@@ -83,10 +82,10 @@ impl AgentProvider for ClaudeProvider {
         let Ok(entries) = std::fs::read_dir(&projects) else {
             return Ok(Vec::new());
         };
-        let active: HashSet<String> = self
+        let active: std::collections::HashMap<String, Option<String>> = self
             .live_sessions()
             .into_iter()
-            .map(|l| l.session_id)
+            .map(|l| (l.session_id, l.status))
             .collect();
         let mut sessions = Vec::new();
         for entry in entries.flatten() {
@@ -110,7 +109,10 @@ impl AgentProvider for ClaudeProvider {
                 }) else {
                     continue;
                 };
-                session.is_active = active.contains(&session.id);
+                if let Some(status) = active.get(&session.id) {
+                    session.is_active = true;
+                    session.live_status = status.clone();
+                }
                 sessions.push(session);
             }
         }
@@ -128,6 +130,20 @@ impl AgentProvider for ClaudeProvider {
             "--resume".to_string(),
             session_id.to_string(),
         ]
+    }
+
+    /// `/compact` runs for real in print mode despite the docs claiming
+    /// slash commands are interactive-only (verified: it appends a
+    /// `system/compact_boundary` + `isCompactSummary` pair to the SAME
+    /// session id, no fork).
+    fn compact_argv(&self, session_id: &str) -> Option<Vec<String>> {
+        Some(vec![
+            "claude".to_string(),
+            "--resume".to_string(),
+            session_id.to_string(),
+            "-p".to_string(),
+            "/compact".to_string(),
+        ])
     }
 
     fn locate(&self, session_id: &str) -> Option<PathBuf> {
@@ -152,6 +168,37 @@ impl AgentProvider for ClaudeProvider {
     fn fts_content(&self, session_id: &str) -> Option<String> {
         let path = self.locate(session_id)?;
         extract::fts_text(&path, claude_turn)
+    }
+
+    /// Claude Code only hands account rate limits to the statusline at
+    /// runtime; a small statusline addition mirrors them to
+    /// `~/.claude/rate-limits-cache.json`, which this reads.
+    fn quota(&self) -> Option<ProviderQuota> {
+        let raw = std::fs::read_to_string(self.home.join("rate-limits-cache.json")).ok()?;
+        let data = serde_json::from_str::<Value>(&raw).ok()?;
+        let window = |key: &str, label: &str| -> Option<QuotaWindow> {
+            let w = data.get(key)?;
+            Some(QuotaWindow {
+                label: label.to_string(),
+                used_percent: w.get("used_percentage").and_then(Value::as_f64)?,
+                resets_at: w.get("resets_at").and_then(Value::as_u64),
+            })
+        };
+        let windows: Vec<QuotaWindow> = [
+            window("five_hour", "session"),
+            window("seven_day", "weekly"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if windows.is_empty() {
+            return None;
+        }
+        Some(ProviderQuota {
+            provider: "claude".to_string(),
+            windows,
+            as_of: data.get("updated_at").and_then(Value::as_f64),
+        })
     }
 
     /// Port of multi-claude's delete_session: jsonl + `<id>/` subagents
@@ -238,14 +285,21 @@ fn build_session(jsonl: &Path, project_cwd: Option<&str>) -> Option<AgentSession
     } else {
         None
     };
-    let embedded_name = extract_embedded_name(jsonl);
-    let title = embedded_name
+    let deep = deep_scan(jsonl);
+    let title = deep
+        .embedded_name
         .or(header.display_name)
         .or(header.first_prompt);
     Some(AgentSession {
         provider: "claude".to_string(),
         is_active: false, // stamped per call from the live registry
+        live_status: None,
         resume_argv: Vec::new(),
+        context_window: deep.context_tokens.map(infer_claude_window),
+        context_tokens: deep.context_tokens,
+        model: deep.model,
+        started_at: header.started_at,
+        cost_usd: deep.cost_usd,
         id,
         title,
         // Resume must run under the cwd the project dir was named after;
@@ -307,6 +361,7 @@ struct SessionHeader {
     cwd: Option<String>,
     branch: Option<String>,
     display_name: Option<String>,
+    started_at: Option<f64>,
 }
 
 fn parse_session_header(jsonl: &Path) -> SessionHeader {
@@ -320,6 +375,12 @@ fn parse_session_header(jsonl: &Path) -> SessionHeader {
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if header.started_at.is_none() {
+            header.started_at = event
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_seconds);
+        }
         if header.cwd.is_none() {
             header.cwd = non_empty_str(event.get("cwd"));
         }
@@ -346,6 +407,33 @@ fn parse_session_header(jsonl: &Path) -> SessionHeader {
         }
     }
     header
+}
+
+/// "2026-06-04T10:00:00.000Z" -> unix seconds, without a chrono dependency.
+fn parse_iso_seconds(iso: &str) -> Option<f64> {
+    let date = iso.get(0..10)?;
+    let time = iso.get(11..19)?;
+    let mut dp = date.split('-');
+    let (y, m, d): (i64, i64, i64) = (
+        dp.next()?.parse().ok()?,
+        dp.next()?.parse().ok()?,
+        dp.next()?.parse().ok()?,
+    );
+    let mut tp = time.split(':');
+    let (hh, mm, ss): (i64, i64, i64) = (
+        tp.next()?.parse().ok()?,
+        tp.next()?.parse().ok()?,
+        tp.next()?.parse().ok()?,
+    );
+    // Civil-to-days (Howard Hinnant), inverse of the export timestamp.
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = y_adj.div_euclid(400);
+    let yoe = y_adj - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some((days * 86_400 + hh * 3600 + mm * 60 + ss) as f64)
 }
 
 fn non_empty_str(value: Option<&Value>) -> Option<String> {
@@ -379,16 +467,53 @@ fn extract_user_prompt(event: &Value) -> Option<String> {
     None
 }
 
-/// Return the latest name set via Claude's `/rename`, scanning up to
-/// RENAME_SCAN_LINES events for `system/local_command` stdout markers (later
-/// renames win); also accepts a deprecated top-level `name` string.
-fn extract_embedded_name(jsonl: &Path) -> Option<String> {
+#[derive(Default)]
+struct DeepScan {
+    embedded_name: Option<String>,
+    context_tokens: Option<u64>,
+    model: Option<String>,
+    cost_usd: Option<f64>,
+}
+
+/// Approximate API rates per million tokens (input, output, cache write,
+/// cache read) by model family. Estimates: subscription plans don't bill
+/// per token, and rates drift over time.
+fn model_rates(model: &str) -> (f64, f64, f64, f64) {
+    if model.contains("opus") {
+        (15.0, 75.0, 18.75, 1.5)
+    } else if model.contains("haiku") {
+        (1.0, 5.0, 1.25, 0.1)
+    } else {
+        // sonnet and unknown families
+        (3.0, 15.0, 3.75, 0.3)
+    }
+}
+
+/// One bounded pass over the log capturing the latest `/rename` (later
+/// renames win — `system/local_command` stdout markers, plus a deprecated
+/// top-level `name` string) and the latest `usage` block, whose input +
+/// cache tokens equal the session's current context size. Only candidate
+/// lines are JSON-parsed; the usage candidate is kept as a string and parsed
+/// once at the end.
+fn deep_scan(jsonl: &Path) -> DeepScan {
     const MARKER: &str = "Session renamed to:";
-    let file = File::open(jsonl).ok()?;
+    let mut result = DeepScan::default();
+    let Ok(file) = File::open(jsonl) else {
+        return result;
+    };
     let reader = BufReader::new(file);
     let mut latest: Option<String> = None;
+    let mut latest_usage_line: Option<String> = None;
+    let mut cost = 0.0f64;
     for line in reader.lines().take(RENAME_SCAN_LINES) {
         let Ok(line) = line else { break };
+        if line.contains("\"usage\"") {
+            if let Some((model, usage_cost)) = parse_usage_cost(&line) {
+                cost += usage_cost;
+                result.model = Some(model);
+            }
+            latest_usage_line = Some(line.clone());
+        }
         // Cheap pre-filter: full JSON parse only for candidate lines.
         let has_marker = line.contains(MARKER);
         let has_name = line.contains("\"name\"");
@@ -418,7 +543,49 @@ fn extract_embedded_name(jsonl: &Path) -> Option<String> {
             latest = Some(name);
         }
     }
-    latest
+    result.embedded_name = latest;
+    result.context_tokens = latest_usage_line.as_deref().and_then(parse_context_tokens);
+    result.cost_usd = (cost > 0.0).then_some(cost);
+    result
+}
+
+/// Cost contribution of one assistant event plus its model name.
+fn parse_usage_cost(line: &str) -> Option<(String, f64)> {
+    let event = serde_json::from_str::<Value>(line).ok()?;
+    let message = event.get("message")?;
+    let model = message.get("model").and_then(Value::as_str)?.to_string();
+    let usage = message.get("usage")?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0) as f64;
+    let (rate_in, rate_out, rate_cw, rate_cr) = model_rates(&model);
+    let cost = (field("input_tokens") * rate_in
+        + field("output_tokens") * rate_out
+        + field("cache_creation_input_tokens") * rate_cw
+        + field("cache_read_input_tokens") * rate_cr)
+        / 1_000_000.0;
+    Some((model, cost))
+}
+
+/// Claude's logs don't record the window size. Assume the 200k baseline and
+/// upgrade to the 1M beta once usage proves it — conservative on purpose: a
+/// 1M user sees a pessimistic percentage below 200k, never an optimistic one.
+fn infer_claude_window(tokens: u64) -> u64 {
+    if tokens > 200_000 {
+        1_000_000
+    } else {
+        200_000
+    }
+}
+
+/// Context size of one assistant event: usage input + cache read + cache
+/// creation tokens (what Claude Code itself reports as context).
+fn parse_context_tokens(line: &str) -> Option<u64> {
+    let event = serde_json::from_str::<Value>(line).ok()?;
+    let usage = event.get("message")?.get("usage")?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let total = field("input_tokens")
+        + field("cache_read_input_tokens")
+        + field("cache_creation_input_tokens");
+    (total > 0).then_some(total)
 }
 
 /// Extract X from `<local-command-stdout>Session renamed to: X</local-command-stdout>`.
@@ -523,7 +690,7 @@ mod tests {
                 &rename("segundo"),
             ],
         );
-        assert_eq!(extract_embedded_name(&path).as_deref(), Some("segundo"));
+        assert_eq!(deep_scan(&path).embedded_name.as_deref(), Some("segundo"));
     }
 
     #[test]
@@ -577,6 +744,58 @@ mod tests {
         let p = ClaudeProvider::new();
         assert_eq!(p.resume_argv("xyz"), vec!["claude", "--resume", "xyz"]);
         assert_eq!(p.new_session_argv(), vec!["claude"]);
+        assert_eq!(
+            p.compact_argv("xyz"),
+            Some(
+                ["claude", "--resume", "xyz", "-p", "/compact"]
+                    .map(String::from)
+                    .to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn quota_reads_the_statusline_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".claude");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("rate-limits-cache.json"),
+            "{\"five_hour\":{\"used_percentage\":50,\"resets_at\":1780600000},\
+             \"seven_day\":{\"used_percentage\":25,\"resets_at\":1780900000},\
+             \"updated_at\":1780568594.3}",
+        )
+        .unwrap();
+        let provider = ClaudeProvider::with_home(home.clone());
+        let quota = provider.quota().unwrap();
+        assert_eq!(quota.windows.len(), 2);
+        assert_eq!(quota.windows[0].label, "session");
+        assert_eq!(quota.windows[0].used_percent, 50.0);
+        assert_eq!(quota.windows[1].label, "weekly");
+        assert_eq!(quota.windows[1].resets_at, Some(1_780_900_000));
+        // Missing cache -> None.
+        std::fs::remove_file(home.join("rate-limits-cache.json")).unwrap();
+        assert!(provider.quota().is_none());
+    }
+
+    #[test]
+    fn deep_scan_captures_latest_context_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let usage = |inp: u64, read: u64| {
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"usage\":{{\"input_tokens\":{inp},\
+                 \"cache_read_input_tokens\":{read},\"cache_creation_input_tokens\":100,\
+                 \"output_tokens\":5}}}}}}"
+            )
+        };
+        let path = write_session(
+            tmp.path(),
+            "s-ctx",
+            &[&user_event("/w", "p"), &usage(10, 1000), &usage(2, 856_101)],
+        );
+        let deep = deep_scan(&path);
+        // Latest usage wins: 2 + 856101 + 100.
+        assert_eq!(deep.context_tokens, Some(856_203));
     }
 
     #[test]

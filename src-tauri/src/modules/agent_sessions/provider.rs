@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::modules::agent_sessions::types::{
-    AgentSession, DeleteError, LiveAgentSession, PreviewTurn,
+    AgentSession, DeleteError, LiveAgentSession, PreviewTurn, ProviderQuota,
 };
 
 /// One coding-agent CLI whose on-disk sessions we know how to read.
@@ -48,6 +48,11 @@ pub trait AgentProvider: Send + Sync {
     /// guard (only claude keeps a live registry). Deliberately has no default
     /// so every provider spells out its destructive flow.
     fn delete_session(&self, session_id: &str, force: bool) -> Result<(), DeleteError>;
+    /// Account-level usage windows (session/weekly), when the provider
+    /// records them somewhere we can read. None otherwise.
+    fn quota(&self) -> Option<ProviderQuota> {
+        None
+    }
     /// Drop any internal result caches so the next scan is fully fresh.
     /// Called on user-initiated refresh; mtime-keyed file caches don't need
     /// it (they self-invalidate), so the default is a no-op.
@@ -55,6 +60,11 @@ pub trait AgentProvider: Send + Sync {
     /// Argv to start a fresh session (usually just the binary).
     fn new_session_argv(&self) -> Vec<String> {
         vec![self.binary().to_string()]
+    }
+    /// Argv that compacts `session_id`'s context without a terminal, when
+    /// the CLI supports it. None: compaction only works inside a live TUI.
+    fn compact_argv(&self, _session_id: &str) -> Option<Vec<String>> {
+        None
     }
 }
 
@@ -102,10 +112,28 @@ impl FileScanCache {
 
 /// Resolve `name` against PATH like the shell would, including Windows
 /// extensions (`.exe`, `.cmd`, `.bat`) since agent CLIs ship as npm shims there.
+///
+/// GUI launches inherit a PATH without the entries that interactive-shell rc
+/// files add (nvm, fnm, volta, bun…) — exactly where npm-installed agent CLIs
+/// live. The new-session PTY runs the user's shell, so those binaries *are*
+/// launchable even when this process can't see them; well-known per-user bin
+/// dirs are searched as a fallback so the menu matches what the shell can run.
 pub fn binary_in_path(name: &str) -> bool {
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
+    resolve_binary(name).is_some()
+}
+
+/// Full path of `name` under PATH + the shell-only fallback dirs, or None.
+/// Spawning through this instead of the bare name keeps headless runs
+/// working when the binary is only reachable from an interactive shell.
+pub fn resolve_binary(name: &str) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    dirs.extend(shell_only_bin_dirs());
+    find_binary(name, &dirs)
+}
+
+fn find_binary(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let candidates: Vec<String> = if cfg!(windows) {
         ["", ".exe", ".cmd", ".bat"]
             .iter()
@@ -114,12 +142,52 @@ pub fn binary_in_path(name: &str) -> bool {
     } else {
         vec![name.to_string()]
     };
-    env::split_paths(&paths).any(|dir| {
-        candidates.iter().any(|c| {
+    dirs.iter().find_map(|dir| {
+        candidates.iter().find_map(|c| {
             let full: PathBuf = dir.join(c);
-            full.is_file()
+            full.is_file().then_some(full)
         })
     })
+}
+
+/// Per-user bin dirs that interactive shells put on PATH but GUI launches miss.
+fn shell_only_bin_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut out = vec![
+        home.join(".local/bin"),
+        home.join(".bun/bin"),
+        home.join(".cargo/bin"),
+        home.join(".volta/bin"),
+        home.join(".asdf/shims"),
+        home.join(".local/share/mise/shims"),
+        home.join(".npm-global/bin"),
+    ];
+    // Node version managers nest binaries under per-version directories.
+    for versions_root in [
+        home.join(".nvm/versions/node"),
+        home.join(".config/nvm/versions/node"),
+    ] {
+        out.extend(version_bin_dirs(&versions_root, "bin"));
+    }
+    out.extend(version_bin_dirs(
+        &home.join(".local/share/fnm/node-versions"),
+        "installation/bin",
+    ));
+    out
+}
+
+/// Expand `<root>/<version>/<suffix>` for every version dir under `root`.
+fn version_bin_dirs(root: &Path, suffix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join(suffix))
+        .filter(|p| p.is_dir())
+        .collect()
 }
 
 #[cfg(test)]
@@ -137,6 +205,28 @@ mod tests {
         assert!(!binary_in_path("definitely-not-a-real-binary-xyz"));
     }
 
+    #[test]
+    fn find_binary_locates_file_outside_path() {
+        let tmp = std::env::temp_dir().join("terax-test-bin-dirs");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let bin = tmp.join("fake-agent-cli");
+        std::fs::write(&bin, b"").unwrap();
+        assert_eq!(find_binary("fake-agent-cli", &[tmp.clone()]), Some(bin.clone()));
+        assert_eq!(find_binary("fake-agent-cli", &[tmp.join("nope")]), None);
+        let _ = std::fs::remove_file(&bin);
+    }
+
+    #[test]
+    fn version_bin_dirs_expands_versions_and_skips_missing_root() {
+        let root = std::env::temp_dir().join("terax-test-nvm/versions/node");
+        let bin = root.join("v25.0.0/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let dirs = version_bin_dirs(&root, "bin");
+        assert_eq!(dirs, vec![bin]);
+        assert!(version_bin_dirs(Path::new("/definitely/missing"), "bin").is_empty());
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("terax-test-nvm"));
+    }
+
     fn dummy_session(title: &str) -> AgentSession {
         AgentSession {
             provider: "claude".to_string(),
@@ -148,6 +238,12 @@ mod tests {
             size_bytes: None,
             last_activity: 0.0,
             is_active: false,
+            context_tokens: None,
+            context_window: None,
+            model: None,
+            started_at: None,
+            cost_usd: None,
+            live_status: None,
             resume_argv: Vec::new(),
         }
     }

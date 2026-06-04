@@ -32,13 +32,23 @@ export function sessionLabel(
 export type ParsedFilter = {
   /** Terms behind `content:` — resolved asynchronously against the FTS index. */
   content: string | null;
-  /** Structured predicates (tag:, branch:, id:, path:). */
-  predicates: Array<{ key: "tag" | "branch" | "id" | "path"; value: string }>;
+  /** Structured predicates (tag:, branch:, id:, path:, is:). */
+  predicates: Array<{
+    key: "tag" | "branch" | "id" | "path" | "is";
+    value: string;
+  }>;
   /** Remaining free text, lowercased. */
   text: string;
 };
 
-const PREDICATE_KEYS = new Set(["tag", "branch", "id", "path", "content"]);
+const PREDICATE_KEYS = new Set([
+  "tag",
+  "branch",
+  "id",
+  "path",
+  "content",
+  "is",
+]);
 
 /** Split a filter query into content search, structured predicates and free
  * text. `content:` swallows the rest of the token only (terms are spaces). */
@@ -58,7 +68,10 @@ export function parseFilter(raw: string): ParsedFilter {
     if (!value) continue;
     if (key === "content") content.push(value);
     else
-      predicates.push({ key: key as "tag" | "branch" | "id" | "path", value });
+      predicates.push({
+        key: key as "tag" | "branch" | "id" | "path" | "is",
+        value,
+      });
   }
   return {
     content: content.length ? content.join(" ") : null,
@@ -92,6 +105,11 @@ export function matchesFilter(
     if (key === "id" && !session.id.toLowerCase().includes(value)) return false;
     if (key === "path" && !(session.cwd ?? "").toLowerCase().includes(value)) {
       return false;
+    }
+    if (key === "is") {
+      if (value === "active" && !session.isActive) return false;
+      if (value === "working" && !isWorking(session)) return false;
+      if (value === "waiting" && !isWaiting(session)) return false;
     }
   }
   if (!filter.text) return true;
@@ -284,6 +302,8 @@ export type FolderNode = {
   projects: ProjectNode[];
   sessionCount: number;
   activeCount: number;
+  workingCount: number;
+  waitingCount: number;
 };
 
 export type ProviderTree = {
@@ -292,7 +312,19 @@ export type ProviderTree = {
   looseProjects: ProjectNode[];
   sessionCount: number;
   activeCount: number;
+  workingCount: number;
+  waitingCount: number;
 };
+
+/** Registry says the agent is processing right now. */
+export function isWorking(session: AgentSession): boolean {
+  return session.isActive && session.liveStatus === "busy";
+}
+
+/** Open session sitting at the prompt, waiting for the user. */
+export function isWaiting(session: AgentSession): boolean {
+  return session.isActive && session.liveStatus !== "busy";
+}
 
 function toProjectNode(
   provider: string,
@@ -320,14 +352,17 @@ function toProjectNode(
 
 function folderTotals(node: FolderNode): void {
   for (const child of node.children) folderTotals(child);
+  const own = (pred: (s: AgentSession) => boolean) =>
+    node.projects.reduce((acc, p) => acc + p.sessions.filter(pred).length, 0);
   node.sessionCount =
-    node.projects.reduce((acc, p) => acc + p.sessions.length, 0) +
-    node.children.reduce((acc, c) => acc + c.sessionCount, 0);
+    own(() => true) + node.children.reduce((acc, c) => acc + c.sessionCount, 0);
   node.activeCount =
-    node.projects.reduce(
-      (acc, p) => acc + p.sessions.filter((s) => s.isActive).length,
-      0,
-    ) + node.children.reduce((acc, c) => acc + c.activeCount, 0);
+    own((s) => s.isActive) +
+    node.children.reduce((acc, c) => acc + c.activeCount, 0);
+  node.workingCount =
+    own(isWorking) + node.children.reduce((acc, c) => acc + c.workingCount, 0);
+  node.waitingCount =
+    own(isWaiting) + node.children.reduce((acc, c) => acc + c.waitingCount, 0);
 }
 
 /** Drop folders that hold no projects of this provider anywhere below. */
@@ -364,6 +399,8 @@ export function groupByProviderWithFolders(
         projects: [],
         sessionCount: 0,
         activeCount: 0,
+        workingCount: 0,
+        waitingCount: 0,
       });
     }
     const roots: FolderNode[] = [];
@@ -398,12 +435,95 @@ export function groupByProviderWithFolders(
 
     const folderTree = pruneFolders(roots);
     for (const node of folderTree) folderTotals(node);
+    const all = section.projects.flatMap((p) => p.sessions);
     return {
       provider: section.provider,
       folderTree,
       looseProjects: loose,
       sessionCount: section.sessionCount,
       activeCount: section.activeCount,
+      workingCount: all.filter(isWorking).length,
+      waitingCount: all.filter(isWaiting).length,
     };
   });
+}
+
+/** Compact token count: 857 -> "857", 85_700 -> "86k", 1_230_000 -> "1.2M". */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  const m = n / 1_000_000;
+  return `${m >= 10 ? Math.round(m) : m.toFixed(1)}M`;
+}
+
+/** Percentage of the context window consumed, clamped to [0, 100]. */
+export function contextPercent(tokens: number, window: number): number {
+  if (window <= 0) return 0;
+  return Math.min(100, Math.round((tokens / window) * 100));
+}
+
+/** Color by how much context remains: green while healthy, escalating
+ * through amber and orange to red as the window fills up. */
+export function contextColorClass(percentUsed: number): string {
+  if (percentUsed >= 90) return "text-red-500";
+  if (percentUsed >= 75) return "text-orange-500";
+  if (percentUsed >= 50) return "text-amber-500";
+  return "text-emerald-500";
+}
+
+/** "in 35m", "in 3h", "in 2d" — for quota reset countdowns. */
+export function formatRelativeFuture(
+  unixSecs: number,
+  nowMs = Date.now(),
+): string {
+  const delta = Math.max(0, Math.floor(unixSecs - nowMs / 1000));
+  if (delta < 60) return "now";
+  const mins = Math.ceil(delta / 60);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.round(delta / 3600);
+  if (hours < 48) return `in ${hours}h`;
+  return `in ${Math.round(delta / 86_400)}d`;
+}
+
+/** "3h 20m", "45m", "2d 4h" — session wall-clock duration. */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return "<1m";
+  const days = Math.floor(s / 86_400);
+  const hours = Math.floor((s % 86_400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days}d${hours ? ` ${hours}h` : ""}`;
+  if (hours > 0) return `${hours}h${mins ? ` ${mins}m` : ""}`;
+  return `${mins}m`;
+}
+
+/** "$0.04", "$1.23", "$12" — estimated cost, compact. */
+export function formatCost(usd: number): string {
+  if (usd >= 10) return `$${Math.round(usd)}`;
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+/** "claude-opus-4-8" -> "opus", "claude-sonnet-4-6" -> "sonnet". */
+export function shortModelName(model: string): string {
+  for (const family of ["opus", "sonnet", "haiku"]) {
+    if (model.includes(family)) return family;
+  }
+  return model.replace(/^claude-/, "").slice(0, 12);
+}
+
+/** Health-dot class for a statuspage indicator. */
+export function serviceIndicatorClass(indicator: string): string {
+  switch (indicator) {
+    case "none":
+      return "bg-emerald-500";
+    case "minor":
+      return "bg-amber-500";
+    case "major":
+      return "bg-orange-500";
+    case "critical":
+      return "bg-red-500";
+    default:
+      return "bg-zinc-500";
+  }
 }

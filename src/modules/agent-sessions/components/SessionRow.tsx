@@ -20,17 +20,25 @@ import type { SessionMetadata } from "../lib/metadata";
 import type { AgentSession } from "../lib/native";
 import {
   colorClasses,
+  contextColorClass,
+  contextPercent,
   formatBytes,
+  formatCost,
+  formatDuration,
   formatRelativeTime,
+  formatTokens,
   SESSION_COLORS,
   sessionLabel,
+  shortModelName,
 } from "../lib/parse";
+import { useAgentSessionsStore } from "../store/agentSessionsStore";
 
 export type RowAction =
   | { kind: "rename" }
   | { kind: "tags" }
   | { kind: "color"; token: string | null }
   | { kind: "preview" }
+  | { kind: "compact" }
   | { kind: "export" }
   | { kind: "move" }
   | { kind: "move-to-group" }
@@ -46,6 +54,9 @@ type Props = {
 export function SessionRow({ session, meta, onResume, onAction }: Props) {
   const color = colorClasses(meta?.color);
   const tags = meta?.tags ?? [];
+  const isCompacting = useAgentSessionsStore((s) =>
+    s.compactingIds.has(`${session.provider}:${session.id}`),
+  );
   return (
     <ContextMenu>
       <Tooltip>
@@ -77,11 +88,30 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                   >
                     {sessionLabel(session, meta)}
                   </span>
-                  {session.isActive ? (
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-emerald-500">
-                      <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
-                      active
+                  {isCompacting ? (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-sky-500"
+                      title="Headless compaction in progress — the context is being summarized"
+                    >
+                      <span className="size-1.5 animate-pulse rounded-full bg-sky-500" />
+                      compacting
                     </span>
+                  ) : null}
+                  {session.isActive ? (
+                    session.liveStatus === "busy" ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-emerald-500">
+                        <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
+                        working
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-amber-500"
+                        title="Session is open and waiting for input"
+                      >
+                        <span className="size-1.5 rounded-full bg-amber-500" />
+                        waiting
+                      </span>
+                    )
                   ) : null}
                 </span>
                 {tags.length ? (
@@ -97,6 +127,11 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                   </span>
                 ) : null}
                 <span className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  {session.model ? (
+                    <span className="shrink-0 rounded border border-border/60 px-1 leading-4">
+                      {shortModelName(session.model)}
+                    </span>
+                  ) : null}
                   {session.branch ? (
                     <span className="inline-flex min-w-0 items-center gap-0.5">
                       <HugeiconsIcon
@@ -117,6 +152,27 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                       {formatBytes(session.sizeBytes)}
                     </span>
                   ) : null}
+                  {session.contextTokens !== null &&
+                  session.contextWindow !== null ? (
+                    <span
+                      className={cn(
+                        "shrink-0 font-medium tabular-nums",
+                        contextColorClass(
+                          contextPercent(
+                            session.contextTokens,
+                            session.contextWindow,
+                          ),
+                        ),
+                      )}
+                      title={`${formatTokens(session.contextTokens)} of ~${formatTokens(session.contextWindow)} context tokens used`}
+                    >
+                      {contextPercent(
+                        session.contextTokens,
+                        session.contextWindow,
+                      )}
+                      % ctx
+                    </span>
+                  ) : null}
                   <span className="ml-auto shrink-0 tabular-nums">
                     {formatRelativeTime(session.lastActivity)}
                   </span>
@@ -127,6 +183,14 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         </ContextMenuTrigger>
         <TooltipContent side="right" className="max-w-80">
           <p className="break-all font-mono text-[10px]">{session.id}</p>
+          <p className="text-[10px] text-muted-foreground">
+            {session.startedAt
+              ? `Duration ${formatDuration(session.lastActivity - session.startedAt)}`
+              : null}
+            {session.costUsd !== null
+              ? ` · est. cost ${formatCost(session.costUsd)}`
+              : null}
+          </p>
           {session.cwd ? (
             <p className="break-all text-[10px] text-muted-foreground">
               {session.cwd}
@@ -178,6 +242,15 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         <ContextMenuItem onClick={() => onAction(session, { kind: "preview" })}>
           Preview conversation
         </ContextMenuItem>
+        {session.provider === "claude" || session.isActive ? (
+          // Claude compacts headless; other providers only from a live tab.
+          <ContextMenuItem
+            disabled={isCompacting}
+            onClick={() => onAction(session, { kind: "compact" })}
+          >
+            {isCompacting ? "Compacting…" : "Compact context"}
+          </ContextMenuItem>
+        ) : null}
         <ContextMenuItem
           onClick={() => onAction(session, { kind: "move-to-group" })}
         >

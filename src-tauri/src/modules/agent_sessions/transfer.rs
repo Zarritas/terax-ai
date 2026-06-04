@@ -354,6 +354,12 @@ mod tests {
             size_bytes: Some(42),
             last_activity: 0.0,
             is_active: false,
+            context_tokens: None,
+            context_window: None,
+            model: None,
+            started_at: None,
+            cost_usd: None,
+            live_status: None,
             resume_argv: Vec::new(),
         }
     }
