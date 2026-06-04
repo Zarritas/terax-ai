@@ -132,6 +132,20 @@ impl AgentProvider for ClaudeProvider {
         ]
     }
 
+    /// `/compact` runs for real in print mode despite the docs claiming
+    /// slash commands are interactive-only (verified: it appends a
+    /// `system/compact_boundary` + `isCompactSummary` pair to the SAME
+    /// session id, no fork).
+    fn compact_argv(&self, session_id: &str) -> Option<Vec<String>> {
+        Some(vec![
+            "claude".to_string(),
+            "--resume".to_string(),
+            session_id.to_string(),
+            "-p".to_string(),
+            "/compact".to_string(),
+        ])
+    }
+
     fn locate(&self, session_id: &str) -> Option<PathBuf> {
         let target = format!("{session_id}.jsonl");
         let entries = std::fs::read_dir(self.projects_dir()).ok()?;
@@ -730,6 +744,14 @@ mod tests {
         let p = ClaudeProvider::new();
         assert_eq!(p.resume_argv("xyz"), vec!["claude", "--resume", "xyz"]);
         assert_eq!(p.new_session_argv(), vec!["claude"]);
+        assert_eq!(
+            p.compact_argv("xyz"),
+            Some(
+                ["claude", "--resume", "xyz", "-p", "/compact"]
+                    .map(String::from)
+                    .to_vec()
+            )
+        );
     }
 
     #[test]

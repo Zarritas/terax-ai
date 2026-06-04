@@ -61,6 +61,11 @@ pub trait AgentProvider: Send + Sync {
     fn new_session_argv(&self) -> Vec<String> {
         vec![self.binary().to_string()]
     }
+    /// Argv that compacts `session_id`'s context without a terminal, when
+    /// the CLI supports it. None: compaction only works inside a live TUI.
+    fn compact_argv(&self, _session_id: &str) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// Per-file scan cache keyed by mtime. Session logs are append-only and big
@@ -114,14 +119,21 @@ impl FileScanCache {
 /// launchable even when this process can't see them; well-known per-user bin
 /// dirs are searched as a fallback so the menu matches what the shell can run.
 pub fn binary_in_path(name: &str) -> bool {
+    resolve_binary(name).is_some()
+}
+
+/// Full path of `name` under PATH + the shell-only fallback dirs, or None.
+/// Spawning through this instead of the bare name keeps headless runs
+/// working when the binary is only reachable from an interactive shell.
+pub fn resolve_binary(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = env::var_os("PATH")
         .map(|paths| env::split_paths(&paths).collect())
         .unwrap_or_default();
     dirs.extend(shell_only_bin_dirs());
-    binary_in_dirs(name, &dirs)
+    find_binary(name, &dirs)
 }
 
-fn binary_in_dirs(name: &str, dirs: &[PathBuf]) -> bool {
+fn find_binary(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let candidates: Vec<String> = if cfg!(windows) {
         ["", ".exe", ".cmd", ".bat"]
             .iter()
@@ -130,10 +142,10 @@ fn binary_in_dirs(name: &str, dirs: &[PathBuf]) -> bool {
     } else {
         vec![name.to_string()]
     };
-    dirs.iter().any(|dir| {
-        candidates.iter().any(|c| {
+    dirs.iter().find_map(|dir| {
+        candidates.iter().find_map(|c| {
             let full: PathBuf = dir.join(c);
-            full.is_file()
+            full.is_file().then_some(full)
         })
     })
 }
@@ -194,13 +206,13 @@ mod tests {
     }
 
     #[test]
-    fn binary_in_dirs_finds_file_outside_path() {
+    fn find_binary_locates_file_outside_path() {
         let tmp = std::env::temp_dir().join("terax-test-bin-dirs");
         std::fs::create_dir_all(&tmp).unwrap();
         let bin = tmp.join("fake-agent-cli");
         std::fs::write(&bin, b"").unwrap();
-        assert!(binary_in_dirs("fake-agent-cli", &[tmp.clone()]));
-        assert!(!binary_in_dirs("fake-agent-cli", &[tmp.join("nope")]));
+        assert_eq!(find_binary("fake-agent-cli", &[tmp.clone()]), Some(bin.clone()));
+        assert_eq!(find_binary("fake-agent-cli", &[tmp.join("nope")]), None);
         let _ = std::fs::remove_file(&bin);
     }
 

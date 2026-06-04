@@ -12,7 +12,7 @@ import {
   open as openFileDialog,
   save as saveFileDialog,
 } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -49,6 +49,7 @@ import type {
   AgentSession,
 } from "../lib/native";
 import {
+  compactSession,
   deleteSession,
   exportSessions,
   importSessions,
@@ -331,6 +332,52 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     [updateMetadata],
   );
 
+  // Session keys with a headless compaction in flight (runs take minutes).
+  const compacting = useRef<Set<string>>(new Set());
+
+  const handleCompact = useCallback(
+    (session: AgentSession) => {
+      // Live in a Terax tab: type the slash command into its PTY.
+      if (bridge.compactLive(session)) {
+        toast.success("Compact command sent to the running session");
+        return;
+      }
+      if (session.isActive) {
+        toast.error(
+          "Session is running in another terminal — compact it there",
+        );
+        return;
+      }
+      if (session.provider !== "claude") {
+        toast.error(
+          "Headless compaction is only available for Claude sessions",
+        );
+        return;
+      }
+      const key = `${session.provider}:${session.id}`;
+      if (compacting.current.has(key)) {
+        toast.info("This session is already being compacted");
+        return;
+      }
+      compacting.current.add(key);
+      const label = sessionLabel(session, metadata[key]);
+      toast.promise(
+        compactSession(session.provider, session.id, session.cwd)
+          .finally(() => compacting.current.delete(key))
+          .then(() => refresh(true)),
+        {
+          loading: `Compacting "${label}"… (this can take a couple of minutes)`,
+          success: "Session compacted",
+          error: (err) =>
+            String(err).includes("ACTIVE")
+              ? "The session just went live — compact it from its terminal"
+              : String(err),
+        },
+      );
+    },
+    [bridge, metadata, refresh],
+  );
+
   const handleDelete = useCallback(
     (session: AgentSession, force: boolean) => {
       deleteSession(session.provider, session.id, force)
@@ -370,6 +417,9 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
         case "preview":
           openPreview(session);
           break;
+        case "compact":
+          handleCompact(session);
+          break;
         case "export":
           handleExport(
             [session],
@@ -390,7 +440,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           break;
       }
     },
-    [persistMeta, openPreview, handleExport, metadata],
+    [persistMeta, openPreview, handleCompact, handleExport, metadata],
   );
 
   const hasFilter = filter.trim().length > 0 || searchIds !== null;

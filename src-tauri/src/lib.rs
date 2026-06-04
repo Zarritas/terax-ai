@@ -231,6 +231,7 @@ pub fn run() {
             agent_sessions::commands::agent_list_sessions,
             agent_sessions::commands::agent_live_sessions,
             agent_sessions::commands::agent_delete_session,
+            agent_sessions::commands::agent_compact_session,
             agent_sessions::commands::agent_session_preview,
             agent_sessions::commands::agent_search_sessions,
             agent_sessions::commands::agent_export_sessions,

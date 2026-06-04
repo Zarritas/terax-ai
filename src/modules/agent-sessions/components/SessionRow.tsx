@@ -37,6 +37,7 @@ export type RowAction =
   | { kind: "tags" }
   | { kind: "color"; token: string | null }
   | { kind: "preview" }
+  | { kind: "compact" }
   | { kind: "export" }
   | { kind: "move" }
   | { kind: "move-to-group" }
@@ -228,6 +229,14 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         <ContextMenuItem onClick={() => onAction(session, { kind: "preview" })}>
           Preview conversation
         </ContextMenuItem>
+        {session.provider === "claude" || session.isActive ? (
+          // Claude compacts headless; other providers only from a live tab.
+          <ContextMenuItem
+            onClick={() => onAction(session, { kind: "compact" })}
+          >
+            Compact context
+          </ContextMenuItem>
+        ) : null}
         <ContextMenuItem
           onClick={() => onAction(session, { kind: "move-to-group" })}
         >

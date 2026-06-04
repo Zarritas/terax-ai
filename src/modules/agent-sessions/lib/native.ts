@@ -74,6 +74,17 @@ export function deleteSession(
   return invoke("agent_delete_session", { provider, sessionId, force });
 }
 
+/** Headless context compaction; resolves when the CLI run finishes (minutes
+ * on big sessions). Rejects with "ACTIVE" (session live) or "UNSUPPORTED"
+ * (provider has no headless compact). */
+export function compactSession(
+  provider: AgentProviderId,
+  sessionId: string,
+  cwd: string | null,
+): Promise<void> {
+  return invoke("agent_compact_session", { provider, sessionId, cwd });
+}
+
 export function previewSession(
   provider: AgentProviderId,
   sessionId: string,
