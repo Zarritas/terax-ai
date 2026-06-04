@@ -43,7 +43,11 @@ import {
   parseTagList,
   setMetadata,
 } from "../lib/metadata";
-import type { AgentProviderId, AgentSession } from "../lib/native";
+import type {
+  AgentProviderId,
+  AgentProviderInfo,
+  AgentSession,
+} from "../lib/native";
 import {
   deleteSession,
   exportSessions,
@@ -67,6 +71,7 @@ import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 import { CleanupDialog } from "./CleanupDialog";
 import { type FolderDialogState, FolderDialogs } from "./FolderDialogs";
+import { NewSessionDialog } from "./NewSessionDialog";
 import { type DialogState, SessionDialogs } from "./SessionDialogs";
 import {
   type PreviewState,
@@ -118,6 +123,8 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const [transferDialog, setTransferDialog] =
     useState<TransferDialogState>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const [newSessionProvider, setNewSessionProvider] =
+    useState<AgentProviderInfo | null>(null);
   const [activeOnly, setActiveOnly] = useState(false);
   const folders = useAgentSessionsStore((s) => s.folders);
   const applyFolders = useAgentSessionsStore((s) => s.applyFolders);
@@ -140,6 +147,16 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     const cwds = new Set<string>();
     for (const s of sessions) {
       if (s.provider === "claude" && s.cwd) cwds.add(s.cwd);
+    }
+    return [...cwds].sort();
+  }, [sessions]);
+
+  // Candidates for "new session": any cwd a session of any provider has used —
+  // starting e.g. a Codex session on a project known only from Claude is fine.
+  const knownCwds = useMemo(() => {
+    const cwds = new Set<string>();
+    for (const s of sessions) {
+      if (s.cwd) cwds.add(s.cwd);
     }
     return [...cwds].sort();
   }, [sessions]);
@@ -452,7 +469,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                 {startable.map((provider) => (
                   <DropdownMenuItem
                     key={provider.id}
-                    onSelect={() => bridge.newSession(provider, workspaceCwd)}
+                    onSelect={() => setNewSessionProvider(provider)}
                   >
                     New {provider.displayName} session
                   </DropdownMenuItem>
@@ -684,6 +701,13 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           preview={preview}
           metadata={metadata}
           onClose={() => setPreview(null)}
+        />
+        <NewSessionDialog
+          provider={newSessionProvider}
+          cwds={knownCwds}
+          workspaceCwd={workspaceCwd}
+          onClose={() => setNewSessionProvider(null)}
+          onCreate={(provider, cwd) => bridge.newSession(provider, cwd)}
         />
         <TransferDialogs
           dialog={transferDialog}
