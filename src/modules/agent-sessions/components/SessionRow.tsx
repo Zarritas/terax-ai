@@ -33,6 +33,7 @@ export type RowAction =
   | { kind: "preview" }
   | { kind: "export" }
   | { kind: "move" }
+  | { kind: "move-to-group" }
   | { kind: "delete" };
 
 type Props = {
@@ -176,6 +177,11 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         <ContextMenuSeparator />
         <ContextMenuItem onClick={() => onAction(session, { kind: "preview" })}>
           Preview conversation
+        </ContextMenuItem>
+        <ContextMenuItem
+          onClick={() => onAction(session, { kind: "move-to-group" })}
+        >
+          Move to group…
         </ContextMenuItem>
         {session.provider === "claude" ? (
           <>

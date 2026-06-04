@@ -24,6 +24,19 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentSessions } from "../hooks/useAgentSessions";
 import {
+  assignProject,
+  assignSession,
+  createGroup,
+  deleteFolder,
+  deleteGroup,
+  projectKey,
+  renameFolder,
+  renameGroup,
+  sessionKey,
+  unassignProject,
+  unassignSession,
+} from "../lib/folders";
+import {
   allKnownTags,
   deleteMetadata,
   parseTagList,
@@ -40,7 +53,7 @@ import {
   searchSessions,
 } from "../lib/native";
 import {
-  groupByProviderThenProject,
+  groupByProviderWithFolders,
   matchesFilter,
   parseFilter,
   safeFilename,
@@ -49,13 +62,15 @@ import {
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
 import { CleanupDialog } from "./CleanupDialog";
+import { type FolderDialogState, FolderDialogs } from "./FolderDialogs";
 import { type DialogState, SessionDialogs } from "./SessionDialogs";
 import {
   type PreviewState,
   SessionPreviewDialog,
 } from "./SessionPreviewDialog";
-import { type RowAction, SessionRow } from "./SessionRow";
+import type { RowAction } from "./SessionRow";
 import { type TransferDialogState, TransferDialogs } from "./TransferDialogs";
+import { FolderBlock, ProjectBlock, type TreeCallbacks } from "./TreeRows";
 
 const PROVIDER_LABEL: Record<AgentProviderId, string> = {
   claude: "Claude Code",
@@ -98,6 +113,21 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [transferDialog, setTransferDialog] =
     useState<TransferDialogState>(null);
+  const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const folders = useAgentSessionsStore((s) => s.folders);
+  const applyFolders = useAgentSessionsStore((s) => s.applyFolders);
+
+  // Wrap a pure folders transition: validation errors surface as toasts.
+  const mutateFolders = useCallback(
+    (fn: (s: typeof folders) => typeof folders) => {
+      try {
+        applyFolders(fn);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [applyFolders],
+  );
 
   const claudeCwds = useMemo(() => {
     const cwds = new Set<string>();
@@ -328,6 +358,9 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
         case "move":
           setTransferDialog({ kind: "move", session });
           break;
+        case "move-to-group":
+          setFolderDialog({ kind: "move-to-group", session });
+          break;
         case "delete":
           setDialog({ kind: "delete", session });
           break;
@@ -336,15 +369,45 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     [persistMeta, openPreview, handleExport, metadata],
   );
 
-  const providerGroups = useMemo(() => {
+  const hasFilter = filter.trim().length > 0 || searchIds !== null;
+  const providerTrees = useMemo(() => {
     const parsed = parseFilter(filter);
     const visible = sessions.filter(
       (s: AgentSession) =>
         (searchIds === null || searchIds.has(`${s.provider}:${s.id}`)) &&
         matchesFilter(s, parsed, metadata[`${s.provider}:${s.id}`]),
     );
-    return groupByProviderThenProject(visible);
-  }, [sessions, filter, metadata, searchIds]);
+    return groupByProviderWithFolders(visible, folders, hasFilter);
+  }, [sessions, filter, metadata, searchIds, folders, hasFilter]);
+
+  const treeCallbacks: TreeCallbacks = useMemo(
+    () => ({
+      collapsed,
+      toggleCollapsed,
+      metadata,
+      onResume: bridge.resumeSession,
+      onRowAction: handleRowAction,
+      onMoveProjectToFolder: (provider, cwd) =>
+        setFolderDialog({ kind: "move-to-folder", provider, cwd }),
+      onNewGroup: (provider, cwd) =>
+        setFolderDialog({ kind: "new-group", provider, cwd }),
+      onRenameFolder: (path) =>
+        setFolderDialog({ kind: "rename-folder", path }),
+      onDeleteFolder: (path) =>
+        setFolderDialog({ kind: "delete-folder", path }),
+      onRenameGroup: (provider, cwd, name) =>
+        setFolderDialog({ kind: "rename-group", provider, cwd, name }),
+      onDeleteGroup: (provider, cwd, name) =>
+        setFolderDialog({ kind: "delete-group", provider, cwd, name }),
+    }),
+    [
+      collapsed,
+      toggleCollapsed,
+      metadata,
+      bridge.resumeSession,
+      handleRowAction,
+    ],
+  );
 
   const startable = providers.filter((p) => p.binaryFound);
   const activeCount = sessions.filter((s) => s.isActive).length;
@@ -428,18 +491,18 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           {error ? (
             <p className="px-2 py-2 text-[11px] text-destructive">{error}</p>
           ) : null}
-          {!error && providerGroups.length === 0 ? (
+          {!error && providerTrees.length === 0 ? (
             <p className="px-2 py-2 text-[11px] text-muted-foreground">
               {sessions.length === 0
                 ? "No agent sessions found. Sessions from Claude Code, Codex, OpenCode and Gemini will show up here."
                 : "No sessions match the filter."}
             </p>
           ) : null}
-          {providerGroups.map((group) => {
-            const providerKey = `provider:${group.provider}`;
+          {providerTrees.map((tree) => {
+            const providerKey = `provider:${tree.provider}`;
             const providerCollapsed = collapsed.has(providerKey);
             return (
-              <div key={group.provider} className="mb-1">
+              <div key={tree.provider} className="mb-1">
                 <button
                   type="button"
                   onClick={() => toggleCollapsed(providerKey)}
@@ -455,71 +518,87 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                   <span
                     className={cn(
                       "min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide",
-                      PROVIDER_ACCENT[group.provider] ?? "text-foreground/90",
+                      PROVIDER_ACCENT[tree.provider] ?? "text-foreground/90",
                     )}
                   >
-                    {PROVIDER_LABEL[group.provider] ?? group.provider}
+                    {PROVIDER_LABEL[tree.provider] ?? tree.provider}
                   </span>
-                  {group.activeCount > 0 ? (
+                  {tree.activeCount > 0 ? (
                     <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500">
-                      {group.activeCount}
+                      {tree.activeCount}
                     </span>
                   ) : null}
                   <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                    {group.sessionCount}
+                    {tree.sessionCount}
                   </span>
                 </button>
-                {!providerCollapsed
-                  ? group.projects.map((project) => {
-                      const projectKey = `${group.provider}:${project.cwd ?? ""}`;
-                      const projectCollapsed = collapsed.has(projectKey);
-                      return (
-                        <div key={projectKey} className="mb-0.5 pl-2">
-                          <button
-                            type="button"
-                            onClick={() => toggleCollapsed(projectKey)}
-                            className="flex w-full cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-foreground/[0.045]"
-                            title={project.cwd ?? undefined}
-                          >
-                            <HugeiconsIcon
-                              icon={
-                                projectCollapsed
-                                  ? ArrowRight01Icon
-                                  : ArrowDown01Icon
-                              }
-                              size={11}
-                              className="shrink-0 text-muted-foreground"
-                            />
-                            <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-foreground/90">
-                              {project.name}
-                            </span>
-                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                              {project.sessions.length}
-                            </span>
-                          </button>
-                          {!projectCollapsed
-                            ? project.sessions.map((session) => (
-                                <SessionRow
-                                  key={`${session.provider}:${session.id}`}
-                                  session={session}
-                                  meta={
-                                    metadata[
-                                      `${session.provider}:${session.id}`
-                                    ]
-                                  }
-                                  onResume={bridge.resumeSession}
-                                  onAction={handleRowAction}
-                                />
-                              ))
-                            : null}
-                        </div>
-                      );
-                    })
-                  : null}
+                {!providerCollapsed ? (
+                  <div className="pl-2">
+                    {tree.folderTree.map((node) => (
+                      <FolderBlock
+                        key={node.path}
+                        provider={tree.provider}
+                        node={node}
+                        cb={treeCallbacks}
+                      />
+                    ))}
+                    {tree.looseProjects.map((project) => (
+                      <ProjectBlock
+                        key={project.cwd ?? ""}
+                        provider={tree.provider}
+                        project={project}
+                        cb={treeCallbacks}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             );
           })}
         </div>
+        <FolderDialogs
+          dialog={folderDialog}
+          folders={folders}
+          onClose={() => setFolderDialog(null)}
+          onAssignFolder={(provider, cwd, path) =>
+            mutateFolders((s) =>
+              path === null
+                ? unassignProject(s, projectKey(provider, cwd))
+                : assignProject(s, projectKey(provider, cwd), path),
+            )
+          }
+          onRenameFolder={(path, newLeaf) =>
+            mutateFolders((s) => renameFolder(s, path, newLeaf).state)
+          }
+          onDeleteFolder={(path) => mutateFolders((s) => deleteFolder(s, path))}
+          onCreateGroup={(provider, cwd, name) =>
+            mutateFolders(
+              (s) => createGroup(s, projectKey(provider, cwd), name).state,
+            )
+          }
+          onRenameGroup={(provider, cwd, oldName, newName) =>
+            mutateFolders((s) =>
+              renameGroup(s, projectKey(provider, cwd), oldName, newName),
+            )
+          }
+          onDeleteGroup={(provider, cwd, name) =>
+            mutateFolders((s) =>
+              deleteGroup(s, projectKey(provider, cwd), name),
+            )
+          }
+          onAssignGroup={(session, group) =>
+            mutateFolders((s) =>
+              group === null
+                ? unassignSession(s, sessionKey(session.provider, session.id))
+                : assignSession(
+                    s,
+                    projectKey(session.provider, session.cwd ?? ""),
+                    sessionKey(session.provider, session.id),
+                    group,
+                  ),
+            )
+          }
+        />
         <SessionPreviewDialog
           preview={preview}
           metadata={metadata}
