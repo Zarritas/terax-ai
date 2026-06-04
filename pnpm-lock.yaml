@@ -119,6 +119,9 @@ importers:
       '@tauri-apps/plugin-autostart':
         specifier: ~2.5.1
         version: 2.5.1
+      '@tauri-apps/plugin-dialog':
+        specifier: ^2.7.1
+        version: 2.7.1
       '@tauri-apps/plugin-log':
         specifier: ~2.8.0
         version: 2.8.0
@@ -2477,8 +2480,8 @@ packages:
   '@radix-ui/rect@1.1.1':
     resolution: {integrity: sha512-HPwpGIzkl28mWyZqG52jiqDJ12waP11Pa1lGoiyUkIEuMLBP0oeK/C89esbXrxsky5we7dfd8U58nm0SgAWpVw==}
 
-  '@react-grab/cli@0.1.40':
-    resolution: {integrity: sha512-4y8kRfXizJ2Klr+ztIKUmejoJoJqazgHhCSIY63DfvjI17eZh1dDioH7n07nxh5D4tLyONUv/ftUETIbAI4wBw==}
+  '@react-grab/cli@0.1.44':
+    resolution: {integrity: sha512-gMDYY2rw6OWajCcDlXSIgs2LC432YJXSb3Lm5yM187uhRgBYddoEVULi36h+IolX3r7jSb3ew7vn9FfI8NSo0A==}
     hasBin: true
 
   '@replit/codemirror-vim@6.3.0':
@@ -2840,6 +2843,9 @@ packages:
 
   '@tauri-apps/plugin-autostart@2.5.1':
     resolution: {integrity: sha512-zS/xx7yzveCcotkA+8TqkI2lysmG2wvQXv2HGAVExITmnFfHAdj1arGsbbfs3o6EktRHf6l34pJxc3YGG2mg7w==}
+
+  '@tauri-apps/plugin-dialog@2.7.1':
+    resolution: {integrity: sha512-OK1UBXYt+ojcmxMktzzuyonYIFta8CmAASpX+CA+DTGK24KlHjhYI6x2iOJ/TjZF4N7/ACK1oFmEOjIY9IhzOQ==}
 
   '@tauri-apps/plugin-log@2.8.0':
     resolution: {integrity: sha512-a+7rOq3MJwpTOLLKbL8d0qGZ85hgHw5pNOWusA9o3cf7cEgtYHiGY/+O8fj8MvywQIGqFv0da2bYQDlrqLE7rw==}
@@ -5125,8 +5131,8 @@ packages:
     peerDependencies:
       react: ^19.2.5
 
-  react-grab@0.1.40:
-    resolution: {integrity: sha512-oIK2Q7UrhU/DjtxOEgsBmE7rmzjvCdlS2MrooJ9YXaFuvBUuRFyVk0AJ37KwcpE2fLQ2403RBZ3qU4IuS8OL+w==}
+  react-grab@0.1.44:
+    resolution: {integrity: sha512-bDEwBdI90ljq2lhUtPqmWis/HwYB/CvfT0m5i+P9F83Pt0Ot8o9XL8v00s9jcWzdQUlsFDzmq2FO2CHUe8JY8A==}
     hasBin: true
     peerDependencies:
       react: '>=17.0.0'
@@ -8041,17 +8047,15 @@ snapshots:
 
   '@radix-ui/rect@1.1.1': {}
 
-  '@react-grab/cli@0.1.40':
+  '@react-grab/cli@0.1.44':
     dependencies:
       agent-install: 0.0.5
       commander: 14.0.3
       ignore: 7.0.5
-      jsonc-parser: 3.3.1
       ora: 9.4.0
       package-manager-detector: 1.6.0
       picocolors: 1.1.1
       prompts: 2.4.2
-      smol-toml: 1.6.1
       tinyexec: 1.2.3
 
   '@replit/codemirror-vim@6.3.0(@codemirror/commands@6.10.3)(@codemirror/language@6.12.3)(@codemirror/search@6.7.0)(@codemirror/state@6.6.0)(@codemirror/view@6.41.1)':
@@ -8283,6 +8287,10 @@ snapshots:
       '@tauri-apps/cli-win32-x64-msvc': 2.11.2
 
   '@tauri-apps/plugin-autostart@2.5.1':
+    dependencies:
+      '@tauri-apps/api': 2.11.0
+
+  '@tauri-apps/plugin-dialog@2.7.1':
     dependencies:
       '@tauri-apps/api': 2.11.0
 
@@ -11105,9 +11113,9 @@ snapshots:
       react: 19.2.5
       scheduler: 0.27.0
 
-  react-grab@0.1.40(react@19.2.5):
+  react-grab@0.1.44(react@19.2.5):
     dependencies:
-      '@react-grab/cli': 0.1.40
+      '@react-grab/cli': 0.1.44
       bippy: 0.5.41(react@19.2.5)
     optionalDependencies:
       react: 19.2.5
@@ -11152,7 +11160,7 @@ snapshots:
       react: 19.2.5
       react-doctor: 0.2.14(eslint@10.4.1(jiti@2.7.0))
       react-dom: 19.2.5(react@19.2.5)
-      react-grab: 0.1.40(react@19.2.5)
+      react-grab: 0.1.44(react@19.2.5)
     optionalDependencies:
       esbuild: 0.27.7
       unplugin: 3.0.0

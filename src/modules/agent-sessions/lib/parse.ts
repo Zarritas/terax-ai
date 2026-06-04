@@ -242,3 +242,15 @@ export function formatBytes(n: number): string {
   }
   return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
+
+/** Slug usable as a filename: word chars/dots/dashes kept, the rest folded
+ * to single dashes, trimmed and capped (port of multi-claude's safe_filename). */
+export function safeFilename(text: string, fallback = "session"): string {
+  const cleaned = text
+    .trim()
+    .replace(/[^\w.-]+/gu, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 60)
+    .replace(/^[-.]+|[-.]+$/g, "");
+  return cleaned || fallback;
+}

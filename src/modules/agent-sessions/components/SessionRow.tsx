@@ -31,6 +31,8 @@ export type RowAction =
   | { kind: "tags" }
   | { kind: "color"; token: string | null }
   | { kind: "preview" }
+  | { kind: "export" }
+  | { kind: "move" }
   | { kind: "delete" };
 
 type Props = {
@@ -175,6 +177,21 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         <ContextMenuItem onClick={() => onAction(session, { kind: "preview" })}>
           Preview conversation
         </ContextMenuItem>
+        {session.provider === "claude" ? (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onClick={() => onAction(session, { kind: "export" })}
+            >
+              Export…
+            </ContextMenuItem>
+            <ContextMenuItem
+              onClick={() => onAction(session, { kind: "move" })}
+            >
+              Move to project…
+            </ContextMenuItem>
+          </>
+        ) : null}
         <ContextMenuSeparator />
         <ContextMenuItem
           variant="destructive"

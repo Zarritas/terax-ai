@@ -8,6 +8,7 @@ import {
   groupByProviderThenProject,
   matchesFilter,
   parseFilter,
+  safeFilename,
   sessionLabel,
 } from "./parse";
 
@@ -187,6 +188,16 @@ describe("formatRelativeTime", () => {
 
   it("clamps future timestamps to now", () => {
     expect(formatRelativeTime(now / 1000 + 999, now)).toBe("now");
+  });
+});
+
+describe("safeFilename", () => {
+  it("slugs labels and caps length", () => {
+    expect(safeFilename("Arregla el parser!! (v2)")).toBe(
+      "Arregla-el-parser-v2",
+    );
+    expect(safeFilename("  --..  ")).toBe("session");
+    expect(safeFilename("x".repeat(100)).length).toBeLessThanOrEqual(60);
   });
 });
 

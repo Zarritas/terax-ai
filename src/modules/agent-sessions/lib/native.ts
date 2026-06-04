@@ -74,3 +74,48 @@ export function previewSession(
 export function searchSessions(query: string): Promise<SessionRef[]> {
   return invoke<SessionRef[]>("agent_search_sessions", { query });
 }
+
+export type ExportItem = {
+  sessionId: string;
+  displayName?: string | null;
+  tags?: string[];
+};
+
+export type ManifestSessionInfo = {
+  id: string;
+  displayName: string | null;
+  firstPrompt: string | null;
+  tags: string[];
+};
+
+export type ImportOutcome = {
+  imported: ManifestSessionInfo[];
+  skippedExisting: string[];
+  skippedMissing: string[];
+};
+
+export function exportSessions(
+  items: ExportItem[],
+  destPath: string,
+): Promise<number> {
+  return invoke<number>("agent_export_sessions", { items, destPath });
+}
+
+export function readManifest(zipPath: string): Promise<ManifestSessionInfo[]> {
+  return invoke<ManifestSessionInfo[]>("agent_read_manifest", { zipPath });
+}
+
+export function importSessions(
+  zipPath: string,
+  destCwd: string,
+): Promise<ImportOutcome> {
+  return invoke<ImportOutcome>("agent_import_sessions", { zipPath, destCwd });
+}
+
+export function moveSession(
+  sessionId: string,
+  sourceCwd: string,
+  destCwd: string,
+): Promise<void> {
+  return invoke("agent_move_session", { sessionId, sourceCwd, destCwd });
+}

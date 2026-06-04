@@ -3,9 +3,14 @@ import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   CleanIcon,
+  Download01Icon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  open as openFileDialog,
+  save as saveFileDialog,
+} from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -25,11 +30,21 @@ import {
   setMetadata,
 } from "../lib/metadata";
 import type { AgentProviderId, AgentSession } from "../lib/native";
-import { deleteSession, previewSession, searchSessions } from "../lib/native";
+import {
+  deleteSession,
+  exportSessions,
+  importSessions,
+  moveSession,
+  previewSession,
+  readManifest,
+  searchSessions,
+} from "../lib/native";
 import {
   groupByProviderThenProject,
   matchesFilter,
   parseFilter,
+  safeFilename,
+  sessionLabel,
 } from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
@@ -40,6 +55,7 @@ import {
   SessionPreviewDialog,
 } from "./SessionPreviewDialog";
 import { type RowAction, SessionRow } from "./SessionRow";
+import { type TransferDialogState, TransferDialogs } from "./TransferDialogs";
 
 const PROVIDER_LABEL: Record<AgentProviderId, string> = {
   claude: "Claude Code",
@@ -80,6 +96,112 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const [dialog, setDialog] = useState<DialogState>(null);
   const [preview, setPreview] = useState<PreviewState>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [transferDialog, setTransferDialog] =
+    useState<TransferDialogState>(null);
+
+  const claudeCwds = useMemo(() => {
+    const cwds = new Set<string>();
+    for (const s of sessions) {
+      if (s.provider === "claude" && s.cwd) cwds.add(s.cwd);
+    }
+    return [...cwds].sort();
+  }, [sessions]);
+
+  const handleExport = useCallback(
+    (targets: AgentSession[], defaultStem: string) => {
+      void (async () => {
+        const destPath = await saveFileDialog({
+          defaultPath: `${safeFilename(defaultStem)}.claude-session.zip`,
+          filters: [{ name: "Claude session archive", extensions: ["zip"] }],
+        });
+        if (!destPath) return;
+        try {
+          const items = targets.map((s) => {
+            const meta = metadata[`${s.provider}:${s.id}`];
+            return {
+              sessionId: s.id,
+              displayName: meta?.name ?? null,
+              tags: meta?.tags ?? [],
+            };
+          });
+          const written = await exportSessions(items, destPath);
+          toast.success(`Exported ${written} session(s)`);
+        } catch (err) {
+          toast.error(String(err));
+        }
+      })();
+    },
+    [metadata],
+  );
+
+  const handleImportClick = useCallback(() => {
+    void (async () => {
+      const zipPath = await openFileDialog({
+        multiple: false,
+        filters: [{ name: "Session archive", extensions: ["zip"] }],
+      });
+      if (typeof zipPath !== "string") return;
+      try {
+        const manifest = await readManifest(zipPath);
+        setTransferDialog({ kind: "import", zipPath, manifest });
+      } catch (err) {
+        toast.error(String(err));
+      }
+    })();
+  }, []);
+
+  const handleImport = useCallback(
+    (zipPath: string, destCwd: string) => {
+      void (async () => {
+        try {
+          const outcome = await importSessions(zipPath, destCwd);
+          for (const imported of outcome.imported) {
+            if (imported.displayName || imported.tags.length) {
+              const next = await setMetadata("claude", imported.id, {
+                name: imported.displayName ?? undefined,
+                tags: imported.tags.length ? imported.tags : undefined,
+              });
+              updateMetadata("claude", imported.id, next);
+            }
+          }
+          const parts = [`Imported ${outcome.imported.length}`];
+          if (outcome.skippedExisting.length)
+            parts.push(`${outcome.skippedExisting.length} already present`);
+          if (outcome.skippedMissing.length)
+            parts.push(`${outcome.skippedMissing.length} missing payload`);
+          toast[outcome.imported.length ? "success" : "warning"](
+            parts.join(" · "),
+          );
+          void refresh(true);
+        } catch (err) {
+          toast.error(String(err));
+        }
+      })();
+    },
+    [updateMetadata, refresh],
+  );
+
+  const handleMove = useCallback(
+    (session: AgentSession, destCwd: string) => {
+      void (async () => {
+        try {
+          await moveSession(session.id, session.cwd ?? "", destCwd);
+          toast.success("Session moved");
+          void refresh(true);
+        } catch (err) {
+          const msg = String(err);
+          if (msg.includes("ACTIVE")) {
+            toast.error("The session is running — close it before moving");
+          } else if (msg.includes("COLLISION")) {
+            toast.error("The destination already has a session with this id");
+          } else {
+            toast.error(msg);
+          }
+        }
+      })();
+    },
+    [refresh],
+  );
 
   const contentQuery = useMemo(() => parseFilter(filter).content, [filter]);
 
@@ -194,12 +316,24 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
         case "preview":
           openPreview(session);
           break;
+        case "export":
+          handleExport(
+            [session],
+            sessionLabel(
+              session,
+              metadata[`${session.provider}:${session.id}`],
+            ),
+          );
+          break;
+        case "move":
+          setTransferDialog({ kind: "move", session });
+          break;
         case "delete":
           setDialog({ kind: "delete", session });
           break;
       }
     },
-    [persistMeta, openPreview],
+    [persistMeta, openPreview, handleExport, metadata],
   );
 
   const providerGroups = useMemo(() => {
@@ -250,6 +384,14 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            <button
+              type="button"
+              aria-label="Import sessions from archive"
+              onClick={handleImportClick}
+              className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+            >
+              <HugeiconsIcon icon={Download01Icon} size={13} />
+            </button>
             <button
               type="button"
               aria-label="Clean up old sessions"
@@ -382,6 +524,14 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
           preview={preview}
           metadata={metadata}
           onClose={() => setPreview(null)}
+        />
+        <TransferDialogs
+          dialog={transferDialog}
+          metadata={metadata}
+          claudeCwds={claudeCwds}
+          onClose={() => setTransferDialog(null)}
+          onMove={handleMove}
+          onImport={handleImport}
         />
         <CleanupDialog
           open={cleanupOpen}
