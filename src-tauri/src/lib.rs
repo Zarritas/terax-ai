@@ -1,6 +1,6 @@
 pub mod modules;
 
-use modules::{agent, fs, git, net, pty, secrets, shell, workspace};
+use modules::{agent, agent_sessions, fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
@@ -136,6 +136,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
             // macOS skips parent() for the settings window, so tie its lifecycle
             // to the main window here instead. Other platforms keep parent().
@@ -156,6 +157,7 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyState::default())
+        .manage(agent_sessions::commands::AgentSessionsState::default())
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
@@ -225,6 +227,16 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_claude_hooks,
             agent::agent_claude_hooks_status,
+            agent_sessions::commands::agent_providers,
+            agent_sessions::commands::agent_list_sessions,
+            agent_sessions::commands::agent_live_sessions,
+            agent_sessions::commands::agent_delete_session,
+            agent_sessions::commands::agent_session_preview,
+            agent_sessions::commands::agent_search_sessions,
+            agent_sessions::commands::agent_export_sessions,
+            agent_sessions::commands::agent_read_manifest,
+            agent_sessions::commands::agent_import_sessions,
+            agent_sessions::commands::agent_move_session,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,
