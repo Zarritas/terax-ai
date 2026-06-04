@@ -7,7 +7,6 @@
 // re-encoding matches the dir name (sessions moved across cwds record a stale
 // first cwd and would otherwise flip the project identity).
 
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -83,10 +82,10 @@ impl AgentProvider for ClaudeProvider {
         let Ok(entries) = std::fs::read_dir(&projects) else {
             return Ok(Vec::new());
         };
-        let active: HashSet<String> = self
+        let active: std::collections::HashMap<String, Option<String>> = self
             .live_sessions()
             .into_iter()
-            .map(|l| l.session_id)
+            .map(|l| (l.session_id, l.status))
             .collect();
         let mut sessions = Vec::new();
         for entry in entries.flatten() {
@@ -110,7 +109,10 @@ impl AgentProvider for ClaudeProvider {
                 }) else {
                     continue;
                 };
-                session.is_active = active.contains(&session.id);
+                if let Some(status) = active.get(&session.id) {
+                    session.is_active = true;
+                    session.live_status = status.clone();
+                }
                 sessions.push(session);
             }
         }
@@ -277,9 +279,13 @@ fn build_session(jsonl: &Path, project_cwd: Option<&str>) -> Option<AgentSession
     Some(AgentSession {
         provider: "claude".to_string(),
         is_active: false, // stamped per call from the live registry
+        live_status: None,
         resume_argv: Vec::new(),
         context_window: deep.context_tokens.map(infer_claude_window),
         context_tokens: deep.context_tokens,
+        model: deep.model,
+        started_at: header.started_at,
+        cost_usd: deep.cost_usd,
         id,
         title,
         // Resume must run under the cwd the project dir was named after;
@@ -341,6 +347,7 @@ struct SessionHeader {
     cwd: Option<String>,
     branch: Option<String>,
     display_name: Option<String>,
+    started_at: Option<f64>,
 }
 
 fn parse_session_header(jsonl: &Path) -> SessionHeader {
@@ -354,6 +361,12 @@ fn parse_session_header(jsonl: &Path) -> SessionHeader {
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if header.started_at.is_none() {
+            header.started_at = event
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_seconds);
+        }
         if header.cwd.is_none() {
             header.cwd = non_empty_str(event.get("cwd"));
         }
@@ -380,6 +393,33 @@ fn parse_session_header(jsonl: &Path) -> SessionHeader {
         }
     }
     header
+}
+
+/// "2026-06-04T10:00:00.000Z" -> unix seconds, without a chrono dependency.
+fn parse_iso_seconds(iso: &str) -> Option<f64> {
+    let date = iso.get(0..10)?;
+    let time = iso.get(11..19)?;
+    let mut dp = date.split('-');
+    let (y, m, d): (i64, i64, i64) = (
+        dp.next()?.parse().ok()?,
+        dp.next()?.parse().ok()?,
+        dp.next()?.parse().ok()?,
+    );
+    let mut tp = time.split(':');
+    let (hh, mm, ss): (i64, i64, i64) = (
+        tp.next()?.parse().ok()?,
+        tp.next()?.parse().ok()?,
+        tp.next()?.parse().ok()?,
+    );
+    // Civil-to-days (Howard Hinnant), inverse of the export timestamp.
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = y_adj.div_euclid(400);
+    let yoe = y_adj - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some((days * 86_400 + hh * 3600 + mm * 60 + ss) as f64)
 }
 
 fn non_empty_str(value: Option<&Value>) -> Option<String> {
@@ -417,6 +457,22 @@ fn extract_user_prompt(event: &Value) -> Option<String> {
 struct DeepScan {
     embedded_name: Option<String>,
     context_tokens: Option<u64>,
+    model: Option<String>,
+    cost_usd: Option<f64>,
+}
+
+/// Approximate API rates per million tokens (input, output, cache write,
+/// cache read) by model family. Estimates: subscription plans don't bill
+/// per token, and rates drift over time.
+fn model_rates(model: &str) -> (f64, f64, f64, f64) {
+    if model.contains("opus") {
+        (15.0, 75.0, 18.75, 1.5)
+    } else if model.contains("haiku") {
+        (1.0, 5.0, 1.25, 0.1)
+    } else {
+        // sonnet and unknown families
+        (3.0, 15.0, 3.75, 0.3)
+    }
 }
 
 /// One bounded pass over the log capturing the latest `/rename` (later
@@ -434,9 +490,14 @@ fn deep_scan(jsonl: &Path) -> DeepScan {
     let reader = BufReader::new(file);
     let mut latest: Option<String> = None;
     let mut latest_usage_line: Option<String> = None;
+    let mut cost = 0.0f64;
     for line in reader.lines().take(RENAME_SCAN_LINES) {
         let Ok(line) = line else { break };
         if line.contains("\"usage\"") {
+            if let Some((model, usage_cost)) = parse_usage_cost(&line) {
+                cost += usage_cost;
+                result.model = Some(model);
+            }
             latest_usage_line = Some(line.clone());
         }
         // Cheap pre-filter: full JSON parse only for candidate lines.
@@ -470,7 +531,24 @@ fn deep_scan(jsonl: &Path) -> DeepScan {
     }
     result.embedded_name = latest;
     result.context_tokens = latest_usage_line.as_deref().and_then(parse_context_tokens);
+    result.cost_usd = (cost > 0.0).then_some(cost);
     result
+}
+
+/// Cost contribution of one assistant event plus its model name.
+fn parse_usage_cost(line: &str) -> Option<(String, f64)> {
+    let event = serde_json::from_str::<Value>(line).ok()?;
+    let message = event.get("message")?;
+    let model = message.get("model").and_then(Value::as_str)?.to_string();
+    let usage = message.get("usage")?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0) as f64;
+    let (rate_in, rate_out, rate_cw, rate_cr) = model_rates(&model);
+    let cost = (field("input_tokens") * rate_in
+        + field("output_tokens") * rate_out
+        + field("cache_creation_input_tokens") * rate_cw
+        + field("cache_read_input_tokens") * rate_cr)
+        / 1_000_000.0;
+    Some((model, cost))
 }
 
 /// Claude's logs don't record the window size. Assume the 200k baseline and

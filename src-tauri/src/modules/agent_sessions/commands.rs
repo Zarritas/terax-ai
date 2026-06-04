@@ -7,11 +7,13 @@ use crate::modules::agent_sessions::fts::FtsIndex;
 use crate::modules::agent_sessions::provider::{binary_in_path, AgentProvider};
 use crate::modules::agent_sessions::providers::all_providers;
 use crate::modules::agent_sessions::providers::claude::encode_cwd;
+use crate::modules::agent_sessions::service_status::ServiceStatusCache;
 use crate::modules::agent_sessions::transfer::{
     self, ExportItem, ImportOutcome, ManifestSessionInfo,
 };
 use crate::modules::agent_sessions::types::{
-    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, ProviderQuota, SessionRef,
+    AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, ProviderQuota, ServiceStatus,
+    SessionRef,
 };
 
 /// Repeated UI refetches (watcher debounce, window focus) within this window
@@ -36,6 +38,8 @@ pub struct AgentSessionsState {
     /// otherwise both see stale mtimes and read the same files twice
     /// (observed as two overlapping "fts indexed" passes per scan burst).
     index_lock: Mutex<()>,
+    /// Hosted-service health, cached for a few minutes.
+    service_status: ServiceStatusCache,
 }
 
 enum FtsState {
@@ -58,6 +62,7 @@ impl AgentSessionsState {
             scan_lock: Mutex::new(()),
             fts: Mutex::new(FtsState::Uninitialized),
             index_lock: Mutex::new(()),
+            service_status: ServiceStatusCache::default(),
         }
     }
 
@@ -342,6 +347,15 @@ pub async fn agent_move_session(
 }
 
 #[tauri::command]
+pub async fn agent_service_status(app: AppHandle) -> Result<Vec<ServiceStatus>, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        Ok(state.service_status.get())
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn agent_quotas(app: AppHandle) -> Result<Vec<ProviderQuota>, String> {
     blocking(move || {
         let state = app.state::<AgentSessionsState>();
@@ -489,6 +503,10 @@ mod tests {
                     is_active: false,
                     context_tokens: None,
                     context_window: None,
+                    model: None,
+                    started_at: None,
+                    cost_usd: None,
+                    live_status: None,
                     resume_argv: Vec::new(),
                 },
                 AgentSession {
@@ -503,6 +521,10 @@ mod tests {
                     is_active: false,
                     context_tokens: None,
                     context_window: None,
+                    model: None,
+                    started_at: None,
+                    cost_usd: None,
+                    live_status: None,
                     resume_argv: Vec::new(),
                 },
             ])

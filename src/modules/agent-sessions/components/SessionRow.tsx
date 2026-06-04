@@ -23,10 +23,13 @@ import {
   contextColorClass,
   contextPercent,
   formatBytes,
+  formatCost,
+  formatDuration,
   formatRelativeTime,
   formatTokens,
   SESSION_COLORS,
   sessionLabel,
+  shortModelName,
 } from "../lib/parse";
 
 export type RowAction =
@@ -81,10 +84,20 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                     {sessionLabel(session, meta)}
                   </span>
                   {session.isActive ? (
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-emerald-500">
-                      <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
-                      active
-                    </span>
+                    session.liveStatus === "busy" ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-emerald-500">
+                        <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
+                        working
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[9px] font-semibold uppercase leading-4 text-amber-500"
+                        title="Session is open and waiting for input"
+                      >
+                        <span className="size-1.5 rounded-full bg-amber-500" />
+                        waiting
+                      </span>
+                    )
                   ) : null}
                 </span>
                 {tags.length ? (
@@ -100,6 +113,11 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
                   </span>
                 ) : null}
                 <span className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  {session.model ? (
+                    <span className="shrink-0 rounded border border-border/60 px-1 leading-4">
+                      {shortModelName(session.model)}
+                    </span>
+                  ) : null}
                   {session.branch ? (
                     <span className="inline-flex min-w-0 items-center gap-0.5">
                       <HugeiconsIcon
@@ -151,6 +169,14 @@ export function SessionRow({ session, meta, onResume, onAction }: Props) {
         </ContextMenuTrigger>
         <TooltipContent side="right" className="max-w-80">
           <p className="break-all font-mono text-[10px]">{session.id}</p>
+          <p className="text-[10px] text-muted-foreground">
+            {session.startedAt
+              ? `Duration ${formatDuration(session.lastActivity - session.startedAt)}`
+              : null}
+            {session.costUsd !== null
+              ? ` · est. cost ${formatCost(session.costUsd)}`
+              : null}
+          </p>
           {session.cwd ? (
             <p className="break-all text-[10px] text-muted-foreground">
               {session.cwd}

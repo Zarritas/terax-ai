@@ -238,6 +238,7 @@ pub fn run() {
             agent_sessions::commands::agent_import_sessions,
             agent_sessions::commands::agent_move_session,
             agent_sessions::commands::agent_quotas,
+            agent_sessions::commands::agent_service_status,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,

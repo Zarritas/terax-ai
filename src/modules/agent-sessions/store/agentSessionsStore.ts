@@ -7,6 +7,7 @@ import type {
   AgentProviderInfo,
   AgentSession,
   ProviderQuota,
+  ServiceStatus,
 } from "../lib/native";
 
 type AgentSessionsState = {
@@ -25,6 +26,8 @@ type AgentSessionsState = {
   folders: FoldersState;
   /** Account-level usage windows per provider (session/weekly). */
   quotas: ProviderQuota[];
+  /** Hosted-service health per provider. */
+  serviceStatus: ServiceStatus[];
   setProviders: (providers: AgentProviderInfo[]) => void;
   setSessions: (sessions: AgentSession[]) => void;
   /** Re-stamp isActive from the live registry without a full rescan. */
@@ -42,6 +45,7 @@ type AgentSessionsState = {
   setSearchIds: (searchIds: Set<string> | null) => void;
   setFolders: (folders: FoldersState) => void;
   setQuotas: (quotas: ProviderQuota[]) => void;
+  setServiceStatus: (serviceStatus: ServiceStatus[]) => void;
   /** Apply a pure folders transition optimistically and persist in background. */
   applyFolders: (mutate: (state: FoldersState) => FoldersState) => void;
 };
@@ -57,6 +61,7 @@ export const useAgentSessionsStore = create<AgentSessionsState>((set) => ({
   searchIds: null,
   folders: emptyFoldersState(),
   quotas: [],
+  serviceStatus: [],
 
   setProviders: (providers) => set({ providers }),
   setSessions: (sessions) => set({ sessions }),
@@ -93,6 +98,7 @@ export const useAgentSessionsStore = create<AgentSessionsState>((set) => ({
   setSearchIds: (searchIds) => set({ searchIds }),
   setFolders: (folders) => set({ folders }),
   setQuotas: (quotas) => set({ quotas }),
+  setServiceStatus: (serviceStatus) => set({ serviceStatus }),
   applyFolders: (mutate) =>
     set((s) => {
       const folders = mutate(s.folders);

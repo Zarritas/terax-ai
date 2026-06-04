@@ -59,6 +59,7 @@ import {
   matchesFilter,
   parseFilter,
   safeFilename,
+  serviceIndicatorClass,
   sessionLabel,
 } from "../lib/parse";
 import type { AgentSessionsBridge } from "../lib/resume";
@@ -119,6 +120,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const folders = useAgentSessionsStore((s) => s.folders);
   const applyFolders = useAgentSessionsStore((s) => s.applyFolders);
   const quotas = useAgentSessionsStore((s) => s.quotas);
+  const serviceStatus = useAgentSessionsStore((s) => s.serviceStatus);
 
   // Wrap a pure folders transition: validation errors surface as toasts.
   const mutateFolders = useCallback(
@@ -526,6 +528,21 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                   >
                     {PROVIDER_LABEL[tree.provider] ?? tree.provider}
                   </span>
+                  {(() => {
+                    const health = serviceStatus.find(
+                      (s) => s.provider === tree.provider,
+                    );
+                    if (!health || health.indicator === "unknown") return null;
+                    return (
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          serviceIndicatorClass(health.indicator),
+                        )}
+                        title={`Service status: ${health.description}`}
+                      />
+                    );
+                  })()}
                   {(() => {
                     const quota = quotas.find(
                       (q) => q.provider === tree.provider,

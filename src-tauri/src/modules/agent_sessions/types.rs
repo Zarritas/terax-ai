@@ -23,6 +23,16 @@ pub struct AgentSession {
     /// Context-window tokens of the latest model turn (input + cache read +
     /// cache creation), when the provider records usage. None otherwise.
     pub context_tokens: Option<u64>,
+    /// Model of the latest turn (e.g. "claude-opus-4-8"), when recorded.
+    pub model: Option<String>,
+    /// Unix seconds of the first event, for wall-clock session duration.
+    pub started_at: Option<f64>,
+    /// Estimated API-equivalent cost in USD, summed over every usage block
+    /// with per-model rates. An estimate by nature (subscription plans don't
+    /// bill per token); None when the provider records no usage.
+    pub cost_usd: Option<f64>,
+    /// Live state from the provider registry: "busy" | "idle" | other.
+    pub live_status: Option<String>,
     /// Size of the model's context window. Exact for codex (session_meta
     /// reports it); inferred for claude (200k, upgraded to 1M once usage
     /// exceeds it — conservative, so the warning never under-fires).
@@ -52,6 +62,8 @@ pub struct LiveAgentSession {
     pub provider: String,
     pub session_id: String,
     pub pid: u32,
+    /// "busy" | "idle" | "shell" … as the registry reports it.
+    pub status: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -112,4 +124,14 @@ pub struct ProviderQuota {
     /// Unix seconds of the snapshot these numbers come from (cache mtime /
     /// rollout mtime); None when truly live.
     pub as_of: Option<f64>,
+}
+
+/// Health of a provider's hosted service (statuspage.io shape).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceStatus {
+    pub provider: String,
+    /// "none" | "minor" | "major" | "critical" | "unknown".
+    pub indicator: String,
+    pub description: String,
 }

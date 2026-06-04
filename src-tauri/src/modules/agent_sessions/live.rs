@@ -19,6 +19,7 @@ struct ClaudeRegistryEntry {
     session_id: Option<String>,
     #[serde(rename = "procStart")]
     proc_start: Option<String>,
+    status: Option<String>,
 }
 
 /// Parse Claude Code's live registry under `claude_home/sessions/`.
@@ -54,6 +55,7 @@ pub fn claude_live_sessions(claude_home: &Path) -> Vec<LiveAgentSession> {
             provider: "claude".to_string(),
             session_id,
             pid,
+            status: parsed.status,
         });
     }
     live

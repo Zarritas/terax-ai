@@ -444,3 +444,46 @@ export function formatRelativeFuture(
   if (hours < 48) return `in ${hours}h`;
   return `in ${Math.round(delta / 86_400)}d`;
 }
+
+/** "3h 20m", "45m", "2d 4h" — session wall-clock duration. */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return "<1m";
+  const days = Math.floor(s / 86_400);
+  const hours = Math.floor((s % 86_400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days}d${hours ? ` ${hours}h` : ""}`;
+  if (hours > 0) return `${hours}h${mins ? ` ${mins}m` : ""}`;
+  return `${mins}m`;
+}
+
+/** "$0.04", "$1.23", "$12" — estimated cost, compact. */
+export function formatCost(usd: number): string {
+  if (usd >= 10) return `$${Math.round(usd)}`;
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+/** "claude-opus-4-8" -> "opus", "claude-sonnet-4-6" -> "sonnet". */
+export function shortModelName(model: string): string {
+  for (const family of ["opus", "sonnet", "haiku"]) {
+    if (model.includes(family)) return family;
+  }
+  return model.replace(/^claude-/, "").slice(0, 12);
+}
+
+/** Health-dot class for a statuspage indicator. */
+export function serviceIndicatorClass(indicator: string): string {
+  switch (indicator) {
+    case "none":
+      return "bg-emerald-500";
+    case "minor":
+      return "bg-amber-500";
+    case "major":
+      return "bg-orange-500";
+    case "critical":
+      return "bg-red-500";
+    default:
+      return "bg-zinc-500";
+  }
+}

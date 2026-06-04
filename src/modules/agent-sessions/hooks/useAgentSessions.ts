@@ -10,6 +10,7 @@ import {
   listLiveSessions,
   listProviders,
   listQuotas,
+  listServiceStatus,
   listSessions,
 } from "../lib/native";
 import { useAgentSessionsStore } from "../store/agentSessionsStore";
@@ -34,6 +35,7 @@ export function useAgentSessions(home: string | null) {
     setAllMetadata,
     setFolders,
     setQuotas,
+    setServiceStatus,
   } = useAgentSessionsStore.getState();
   const scanDebounceRef = useRef<number | null>(null);
   const liveDebounceRef = useRef<number | null>(null);
@@ -49,9 +51,13 @@ export function useAgentSessions(home: string | null) {
         setProviders(providers);
         setSessions(sessions);
         setError(null);
-        // Quota badges are best-effort; never fail the refresh over them.
+        // Quota and health badges are best-effort; never fail the refresh
+        // over them (the status fetch hits external pages, cached 5 min).
         void listQuotas()
           .then(setQuotas)
+          .catch(() => {});
+        void listServiceStatus()
+          .then(setServiceStatus)
           .catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -59,7 +65,14 @@ export function useAgentSessions(home: string | null) {
         setLoading(false);
       }
     },
-    [setProviders, setSessions, setLoading, setError, setQuotas],
+    [
+      setProviders,
+      setSessions,
+      setLoading,
+      setError,
+      setQuotas,
+      setServiceStatus,
+    ],
   );
 
   const refreshLiveBadges = useCallback(async () => {

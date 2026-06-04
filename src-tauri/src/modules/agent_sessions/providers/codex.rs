@@ -351,8 +351,12 @@ fn build_session(rollout: &Path) -> Option<AgentSession> {
         size_bytes: Some(meta.len()),
         last_activity: mtime_secs(rollout).unwrap_or(0.0),
         is_active: false,
+        live_status: None,
         context_tokens: latest_context_tokens(rollout),
         context_window,
+        model: None,
+        started_at: None,
+        cost_usd: None,
         resume_argv: Vec::new(),
     })
 }

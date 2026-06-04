@@ -11,6 +11,8 @@ import {
   contextColorClass,
   contextPercent,
   formatBytes,
+  formatCost,
+  formatDuration,
   formatRelativeFuture,
   formatRelativeTime,
   formatTokens,
@@ -20,7 +22,9 @@ import {
   matchesFilter,
   parseFilter,
   safeFilename,
+  serviceIndicatorClass,
   sessionLabel,
+  shortModelName,
 } from "./parse";
 
 const match = (
@@ -42,6 +46,10 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     isActive: false,
     contextTokens: null,
     contextWindow: null,
+    model: null,
+    startedAt: null,
+    costUsd: null,
+    liveStatus: null,
     resumeArgv: ["claude", "--resume", "abc-123"],
     ...overrides,
   };
@@ -238,6 +246,33 @@ describe("formatRelativeFuture", () => {
     expect(formatRelativeFuture(now / 1000 + 3 * 3600, now)).toBe("in 3h");
     expect(formatRelativeFuture(now / 1000 + 5 * 86_400, now)).toBe("in 5d");
     expect(formatRelativeFuture(now / 1000 - 100, now)).toBe("now");
+  });
+});
+
+describe("session telemetry formatters", () => {
+  it("formats durations", () => {
+    expect(formatDuration(45)).toBe("<1m");
+    expect(formatDuration(45 * 60)).toBe("45m");
+    expect(formatDuration(3 * 3600 + 20 * 60)).toBe("3h 20m");
+    expect(formatDuration(2 * 86_400 + 4 * 3600)).toBe("2d 4h");
+  });
+
+  it("formats costs", () => {
+    expect(formatCost(0.04)).toBe("$0.04");
+    expect(formatCost(1.234)).toBe("$1.23");
+    expect(formatCost(12.6)).toBe("$13");
+  });
+
+  it("shortens model names", () => {
+    expect(shortModelName("claude-opus-4-8")).toBe("opus");
+    expect(shortModelName("claude-sonnet-4-6")).toBe("sonnet");
+    expect(shortModelName("claude-haiku-4-5-20251001")).toBe("haiku");
+  });
+
+  it("maps service indicators to dot colors", () => {
+    expect(serviceIndicatorClass("none")).toBe("bg-emerald-500");
+    expect(serviceIndicatorClass("critical")).toBe("bg-red-500");
+    expect(serviceIndicatorClass("unknown")).toBe("bg-zinc-500");
   });
 });
 

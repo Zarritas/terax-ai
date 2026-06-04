@@ -15,6 +15,14 @@ export type AgentSession = {
   isActive: boolean;
   /** Context-window tokens of the latest model turn, when recorded. */
   contextTokens: number | null;
+  /** Model of the latest turn (e.g. "claude-opus-4-8"). */
+  model: string | null;
+  /** Unix seconds of the first event. */
+  startedAt: number | null;
+  /** Estimated API-equivalent cost in USD. */
+  costUsd: number | null;
+  /** "busy" | "idle" | other registry states, when the session is live. */
+  liveStatus: string | null;
   /** Model context window size (exact for codex, inferred for claude). */
   contextWindow: number | null;
   /** Backend-built argv to resume this session in a terminal. */
@@ -33,6 +41,7 @@ export type LiveAgentSession = {
   provider: AgentProviderId;
   sessionId: string;
   pid: number;
+  status: string | null;
 };
 
 export function listProviders(): Promise<AgentProviderInfo[]> {
@@ -138,4 +147,14 @@ export type ProviderQuota = {
 
 export function listQuotas(): Promise<ProviderQuota[]> {
   return invoke<ProviderQuota[]>("agent_quotas");
+}
+
+export type ServiceStatus = {
+  provider: AgentProviderId;
+  indicator: "none" | "minor" | "major" | "critical" | "unknown";
+  description: string;
+};
+
+export function listServiceStatus(): Promise<ServiceStatus[]> {
+  return invoke<ServiceStatus[]>("agent_service_status");
 }
