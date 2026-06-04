@@ -1,4 +1,10 @@
 import { describe, expect, it } from "vitest";
+import {
+  addFolder,
+  assignProject,
+  assignSession,
+  emptyFoldersState,
+} from "./folders";
 import type { AgentSession } from "./native";
 import {
   colorClasses,
@@ -6,6 +12,7 @@ import {
   formatRelativeTime,
   groupByProject,
   groupByProviderThenProject,
+  groupByProviderWithFolders,
   matchesFilter,
   parseFilter,
   safeFilename,
@@ -207,5 +214,67 @@ describe("formatBytes", () => {
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
     expect(formatBytes(15 * 1024 * 1024)).toBe("15 MB");
+  });
+});
+
+describe("groupByProviderWithFolders", () => {
+  function fixtureFolders() {
+    let f = emptyFoldersState();
+    f = assignProject(f, "claude:/w/a", "Trabajo/Gextia");
+    f = assignSession(f, "claude:/w/a", "claude:s1", "Bugs");
+    return f;
+  }
+  const fixtureSessions = [
+    session({ id: "s1", cwd: "/w/a", lastActivity: 100 }),
+    session({ id: "s2", cwd: "/w/a", lastActivity: 200 }),
+    session({ id: "s3", cwd: "/w/b", lastActivity: 300 }),
+    session({ id: "x1", provider: "codex", cwd: "/w/a", lastActivity: 50 }),
+  ];
+
+  it("nests assigned projects under their folder tree", () => {
+    const [claude, codex] = groupByProviderWithFolders(
+      fixtureSessions,
+      fixtureFolders(),
+      false,
+    );
+    expect(claude.provider).toBe("claude");
+    // /w/b is unassigned -> loose; /w/a sits under Trabajo > Gextia.
+    expect(claude.looseProjects.map((p) => p.cwd)).toEqual(["/w/b"]);
+    expect(claude.folderTree).toHaveLength(1);
+    const trabajo = claude.folderTree[0];
+    expect(trabajo.name).toBe("Trabajo");
+    expect(trabajo.depth).toBe(0);
+    expect(trabajo.projects).toHaveLength(0);
+    expect(trabajo.children[0].name).toBe("Gextia");
+    expect(trabajo.children[0].projects[0].cwd).toBe("/w/a");
+    expect(trabajo.sessionCount).toBe(2);
+    // The codex project at /w/a is NOT assigned (keys are per provider).
+    expect(codex.provider).toBe("codex");
+    expect(codex.folderTree).toHaveLength(0);
+    expect(codex.looseProjects).toHaveLength(1);
+  });
+
+  it("splits sessions into groups and loose within a project", () => {
+    const [claude] = groupByProviderWithFolders(
+      fixtureSessions,
+      fixtureFolders(),
+      false,
+    );
+    const projA = claude.folderTree[0].children[0].projects[0];
+    expect(projA.groups).toEqual([
+      { name: "Bugs", sessions: [expect.objectContaining({ id: "s1" })] },
+    ]);
+    expect(projA.looseSessions.map((s) => s.id)).toEqual(["s2"]);
+  });
+
+  it("prunes empty groups when filtering and empty folders always", () => {
+    let f = fixtureFolders();
+    // A folder with no projects of this provider must not render.
+    ({ state: f } = addFolder(f, "Vacia"));
+    const onlyS2 = fixtureSessions.filter((s) => s.id === "s2");
+    const [claude] = groupByProviderWithFolders(onlyS2, f, true);
+    const projA = claude.folderTree[0].children[0].projects[0];
+    expect(projA.groups).toHaveLength(0); // "Bugs" pruned (its session filtered out)
+    expect(claude.folderTree.map((n) => n.name)).toEqual(["Trabajo"]);
   });
 });

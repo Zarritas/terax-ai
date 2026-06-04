@@ -1,5 +1,12 @@
 // Type-only imports: erased at compile time, so pure helpers (and their
 // vitest suite) never load the tauri API module at runtime.
+import type { FoldersState } from "./folders";
+import {
+  FOLDER_SEPARATOR,
+  folderLeaf,
+  projectKey,
+  sessionKey,
+} from "./folders";
 import type { SessionMetadata } from "./metadata";
 import type { AgentProviderId, AgentSession } from "./native";
 
@@ -253,4 +260,150 @@ export function safeFilename(text: string, fallback = "session"): string {
     .slice(0, 60)
     .replace(/^[-.]+|[-.]+$/g, "");
   return cleaned || fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchical grouping: provider -> folder tree -> project -> session groups
+// ---------------------------------------------------------------------------
+
+export type SessionGroupNode = {
+  name: string;
+  sessions: AgentSession[];
+};
+
+export type ProjectNode = ProjectGroup & {
+  groups: SessionGroupNode[];
+  looseSessions: AgentSession[];
+};
+
+export type FolderNode = {
+  path: string;
+  name: string;
+  depth: number;
+  children: FolderNode[];
+  projects: ProjectNode[];
+  sessionCount: number;
+  activeCount: number;
+};
+
+export type ProviderTree = {
+  provider: AgentProviderId;
+  folderTree: FolderNode[];
+  looseProjects: ProjectNode[];
+  sessionCount: number;
+  activeCount: number;
+};
+
+function toProjectNode(
+  provider: string,
+  project: ProjectGroup,
+  folders: FoldersState,
+  pruneEmptyGroups: boolean,
+): ProjectNode {
+  const key = projectKey(provider, project.cwd ?? "");
+  const groupNames = folders.sessionGroups[key] ?? [];
+  const byGroup = new Map<string, AgentSession[]>(
+    groupNames.map((name) => [name, []]),
+  );
+  const loose: AgentSession[] = [];
+  for (const session of project.sessions) {
+    const group = folders.sessionAssignments[sessionKey(provider, session.id)];
+    const bucket = group ? byGroup.get(group) : undefined;
+    if (bucket) bucket.push(session);
+    else loose.push(session);
+  }
+  const groups: SessionGroupNode[] = groupNames
+    .map((name) => ({ name, sessions: byGroup.get(name) ?? [] }))
+    .filter((g) => !pruneEmptyGroups || g.sessions.length > 0);
+  return { ...project, groups, looseSessions: loose };
+}
+
+function folderTotals(node: FolderNode): void {
+  for (const child of node.children) folderTotals(child);
+  node.sessionCount =
+    node.projects.reduce((acc, p) => acc + p.sessions.length, 0) +
+    node.children.reduce((acc, c) => acc + c.sessionCount, 0);
+  node.activeCount =
+    node.projects.reduce(
+      (acc, p) => acc + p.sessions.filter((s) => s.isActive).length,
+      0,
+    ) + node.children.reduce((acc, c) => acc + c.activeCount, 0);
+}
+
+/** Drop folders that hold no projects of this provider anywhere below. */
+function pruneFolders(nodes: FolderNode[]): FolderNode[] {
+  const kept: FolderNode[] = [];
+  for (const node of nodes) {
+    node.children = pruneFolders(node.children);
+    if (node.projects.length || node.children.length) kept.push(node);
+  }
+  return kept;
+}
+
+/**
+ * Provider sections with user folders applied: assigned projects nest under
+ * their folder (folders shown only where they hold projects of the provider),
+ * unassigned projects stay loose below. `pruneEmptyGroups` should be true
+ * while a filter is active so empty session groups vanish with it.
+ */
+export function groupByProviderWithFolders(
+  sessions: AgentSession[],
+  folders: FoldersState,
+  pruneEmptyGroups: boolean,
+): ProviderTree[] {
+  return groupByProviderThenProject(sessions).map((section) => {
+    const nodes = new Map<string, FolderNode>();
+    // Ancestor-first order guarantees parents exist before children.
+    for (const path of folders.projectFolders) {
+      const depth = path.split(FOLDER_SEPARATOR).length - 1;
+      nodes.set(path.toLowerCase(), {
+        path,
+        name: folderLeaf(path),
+        depth,
+        children: [],
+        projects: [],
+        sessionCount: 0,
+        activeCount: 0,
+      });
+    }
+    const roots: FolderNode[] = [];
+    for (const path of folders.projectFolders) {
+      const node = nodes.get(path.toLowerCase());
+      if (!node) continue;
+      const parentIdx = path.lastIndexOf(FOLDER_SEPARATOR);
+      const parent =
+        parentIdx > 0
+          ? nodes.get(path.slice(0, parentIdx).toLowerCase())
+          : undefined;
+      if (parent) parent.children.push(node);
+      else roots.push(node);
+    }
+
+    const loose: ProjectNode[] = [];
+    for (const project of section.projects) {
+      const node = toProjectNode(
+        section.provider,
+        project,
+        folders,
+        pruneEmptyGroups,
+      );
+      const assigned =
+        folders.projectAssignments[
+          projectKey(section.provider, project.cwd ?? "")
+        ];
+      const folder = assigned ? nodes.get(assigned.toLowerCase()) : undefined;
+      if (folder) folder.projects.push(node);
+      else loose.push(node);
+    }
+
+    const folderTree = pruneFolders(roots);
+    for (const node of folderTree) folderTotals(node);
+    return {
+      provider: section.provider,
+      folderTree,
+      looseProjects: loose,
+      sessionCount: section.sessionCount,
+      activeCount: section.activeCount,
+    };
+  });
 }
