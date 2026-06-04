@@ -1,4 +1,5 @@
 import {
+  Activity01Icon,
   Add01Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -117,6 +118,7 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
   const [transferDialog, setTransferDialog] =
     useState<TransferDialogState>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const [activeOnly, setActiveOnly] = useState(false);
   const folders = useAgentSessionsStore((s) => s.folders);
   const applyFolders = useAgentSessionsStore((s) => s.applyFolders);
   const quotas = useAgentSessionsStore((s) => s.quotas);
@@ -379,11 +381,16 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
     const parsed = parseFilter(filter);
     const visible = sessions.filter(
       (s: AgentSession) =>
+        (!activeOnly || s.isActive) &&
         (searchIds === null || searchIds.has(`${s.provider}:${s.id}`)) &&
         matchesFilter(s, parsed, metadata[`${s.provider}:${s.id}`]),
     );
-    return groupByProviderWithFolders(visible, folders, hasFilter);
-  }, [sessions, filter, metadata, searchIds, folders, hasFilter]);
+    return groupByProviderWithFolders(
+      visible,
+      folders,
+      hasFilter || activeOnly,
+    );
+  }, [sessions, filter, metadata, searchIds, folders, hasFilter, activeOnly]);
 
   const treeCallbacks: TreeCallbacks = useMemo(
     () => ({
@@ -452,6 +459,20 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            <button
+              type="button"
+              aria-label="Show active sessions only"
+              aria-pressed={activeOnly}
+              onClick={() => setActiveOnly((v) => !v)}
+              className={cn(
+                "flex size-6 cursor-pointer items-center justify-center rounded-md transition-colors",
+                activeOnly
+                  ? "bg-emerald-500/15 text-emerald-500"
+                  : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+              )}
+            >
+              <HugeiconsIcon icon={Activity01Icon} size={13} />
+            </button>
             <button
               type="button"
               aria-label="Import sessions from archive"
@@ -570,9 +591,22 @@ export function AgentSessionsPanel({ bridge, home, workspaceCwd }: Props) {
                       </span>
                     );
                   })()}
-                  {tree.activeCount > 0 ? (
-                    <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500">
-                      {tree.activeCount}
+                  {tree.workingCount > 0 ? (
+                    <span
+                      className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center gap-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500"
+                      title={`${tree.workingCount} session(s) working`}
+                    >
+                      <span className="size-1 animate-pulse rounded-full bg-emerald-500" />
+                      {tree.workingCount}
+                    </span>
+                  ) : null}
+                  {tree.waitingCount > 0 ? (
+                    <span
+                      className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center gap-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-1 text-[9px] font-semibold tabular-nums text-amber-500"
+                      title={`${tree.waitingCount} session(s) waiting for input`}
+                    >
+                      <span className="size-1 rounded-full bg-amber-500" />
+                      {tree.waitingCount}
                     </span>
                   ) : null}
                   <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">

@@ -32,13 +32,23 @@ export function sessionLabel(
 export type ParsedFilter = {
   /** Terms behind `content:` — resolved asynchronously against the FTS index. */
   content: string | null;
-  /** Structured predicates (tag:, branch:, id:, path:). */
-  predicates: Array<{ key: "tag" | "branch" | "id" | "path"; value: string }>;
+  /** Structured predicates (tag:, branch:, id:, path:, is:). */
+  predicates: Array<{
+    key: "tag" | "branch" | "id" | "path" | "is";
+    value: string;
+  }>;
   /** Remaining free text, lowercased. */
   text: string;
 };
 
-const PREDICATE_KEYS = new Set(["tag", "branch", "id", "path", "content"]);
+const PREDICATE_KEYS = new Set([
+  "tag",
+  "branch",
+  "id",
+  "path",
+  "content",
+  "is",
+]);
 
 /** Split a filter query into content search, structured predicates and free
  * text. `content:` swallows the rest of the token only (terms are spaces). */
@@ -58,7 +68,10 @@ export function parseFilter(raw: string): ParsedFilter {
     if (!value) continue;
     if (key === "content") content.push(value);
     else
-      predicates.push({ key: key as "tag" | "branch" | "id" | "path", value });
+      predicates.push({
+        key: key as "tag" | "branch" | "id" | "path" | "is",
+        value,
+      });
   }
   return {
     content: content.length ? content.join(" ") : null,
@@ -92,6 +105,11 @@ export function matchesFilter(
     if (key === "id" && !session.id.toLowerCase().includes(value)) return false;
     if (key === "path" && !(session.cwd ?? "").toLowerCase().includes(value)) {
       return false;
+    }
+    if (key === "is") {
+      if (value === "active" && !session.isActive) return false;
+      if (value === "working" && !isWorking(session)) return false;
+      if (value === "waiting" && !isWaiting(session)) return false;
     }
   }
   if (!filter.text) return true;
@@ -284,6 +302,8 @@ export type FolderNode = {
   projects: ProjectNode[];
   sessionCount: number;
   activeCount: number;
+  workingCount: number;
+  waitingCount: number;
 };
 
 export type ProviderTree = {
@@ -292,7 +312,19 @@ export type ProviderTree = {
   looseProjects: ProjectNode[];
   sessionCount: number;
   activeCount: number;
+  workingCount: number;
+  waitingCount: number;
 };
+
+/** Registry says the agent is processing right now. */
+export function isWorking(session: AgentSession): boolean {
+  return session.isActive && session.liveStatus === "busy";
+}
+
+/** Open session sitting at the prompt, waiting for the user. */
+export function isWaiting(session: AgentSession): boolean {
+  return session.isActive && session.liveStatus !== "busy";
+}
 
 function toProjectNode(
   provider: string,
@@ -320,14 +352,17 @@ function toProjectNode(
 
 function folderTotals(node: FolderNode): void {
   for (const child of node.children) folderTotals(child);
+  const own = (pred: (s: AgentSession) => boolean) =>
+    node.projects.reduce((acc, p) => acc + p.sessions.filter(pred).length, 0);
   node.sessionCount =
-    node.projects.reduce((acc, p) => acc + p.sessions.length, 0) +
-    node.children.reduce((acc, c) => acc + c.sessionCount, 0);
+    own(() => true) + node.children.reduce((acc, c) => acc + c.sessionCount, 0);
   node.activeCount =
-    node.projects.reduce(
-      (acc, p) => acc + p.sessions.filter((s) => s.isActive).length,
-      0,
-    ) + node.children.reduce((acc, c) => acc + c.activeCount, 0);
+    own((s) => s.isActive) +
+    node.children.reduce((acc, c) => acc + c.activeCount, 0);
+  node.workingCount =
+    own(isWorking) + node.children.reduce((acc, c) => acc + c.workingCount, 0);
+  node.waitingCount =
+    own(isWaiting) + node.children.reduce((acc, c) => acc + c.waitingCount, 0);
 }
 
 /** Drop folders that hold no projects of this provider anywhere below. */
@@ -364,6 +399,8 @@ export function groupByProviderWithFolders(
         projects: [],
         sessionCount: 0,
         activeCount: 0,
+        workingCount: 0,
+        waitingCount: 0,
       });
     }
     const roots: FolderNode[] = [];
@@ -398,12 +435,15 @@ export function groupByProviderWithFolders(
 
     const folderTree = pruneFolders(roots);
     for (const node of folderTree) folderTotals(node);
+    const all = section.projects.flatMap((p) => p.sessions);
     return {
       provider: section.provider,
       folderTree,
       looseProjects: loose,
       sessionCount: section.sessionCount,
       activeCount: section.activeCount,
+      workingCount: all.filter(isWorking).length,
+      waitingCount: all.filter(isWaiting).length,
     };
   });
 }

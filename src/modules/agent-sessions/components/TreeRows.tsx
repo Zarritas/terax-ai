@@ -11,7 +11,6 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { cn } from "@/lib/utils";
 import type { SessionMetadata } from "../lib/metadata";
 import type { AgentSession } from "../lib/native";
 import type { FolderNode, ProjectNode } from "../lib/parse";
@@ -192,13 +191,22 @@ export function FolderBlock({
             <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-foreground/90">
               {node.name}
             </span>
-            {node.activeCount > 0 ? (
+            {node.workingCount > 0 ? (
               <span
-                className={cn(
-                  "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500",
-                )}
+                className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center gap-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1 text-[9px] font-semibold tabular-nums text-emerald-500"
+                title={`${node.workingCount} session(s) working`}
               >
-                {node.activeCount}
+                <span className="size-1 animate-pulse rounded-full bg-emerald-500" />
+                {node.workingCount}
+              </span>
+            ) : null}
+            {node.waitingCount > 0 ? (
+              <span
+                className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center gap-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-1 text-[9px] font-semibold tabular-nums text-amber-500"
+                title={`${node.waitingCount} session(s) waiting for input`}
+              >
+                <span className="size-1 rounded-full bg-amber-500" />
+                {node.waitingCount}
               </span>
             ) : null}
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">

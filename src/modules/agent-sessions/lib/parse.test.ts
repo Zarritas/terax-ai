@@ -110,6 +110,18 @@ describe("matchesFilter", () => {
     expect(match(s, "tag:bug")).toBe(false); // sin meta no hay tags
   });
 
+  it("is: predicate filters by live state", () => {
+    const working = session({ isActive: true, liveStatus: "busy" });
+    const waiting = session({ isActive: true, liveStatus: "idle" });
+    const inactive = session({});
+    expect(match(working, "is:active")).toBe(true);
+    expect(match(inactive, "is:active")).toBe(false);
+    expect(match(working, "is:working")).toBe(true);
+    expect(match(waiting, "is:working")).toBe(false);
+    expect(match(waiting, "is:waiting")).toBe(true);
+    expect(match(working, "is:waiting")).toBe(false);
+  });
+
   it("branch:/id:/path: predicates filter on their fields", () => {
     expect(match(s, "branch:feat")).toBe(true);
     expect(match(s, "branch:main")).toBe(false);
@@ -307,6 +319,26 @@ describe("groupByProviderWithFolders", () => {
     session({ id: "s3", cwd: "/w/b", lastActivity: 300 }),
     session({ id: "x1", provider: "codex", cwd: "/w/a", lastActivity: 50 }),
   ];
+
+  it("aggregates working/waiting counts up the folder tree", () => {
+    let f = emptyFoldersState();
+    f = assignProject(f, "claude:/w/a", "Trabajo/Gextia");
+    const tree = groupByProviderWithFolders(
+      [
+        session({ id: "s1", cwd: "/w/a", isActive: true, liveStatus: "busy" }),
+        session({ id: "s2", cwd: "/w/a", isActive: true, liveStatus: "idle" }),
+        session({ id: "s3", cwd: "/w/a" }),
+      ],
+      f,
+      false,
+    )[0];
+    const trabajo = tree.folderTree[0];
+    expect(trabajo.workingCount).toBe(1);
+    expect(trabajo.waitingCount).toBe(1);
+    expect(trabajo.activeCount).toBe(2);
+    expect(tree.workingCount).toBe(1);
+    expect(tree.waitingCount).toBe(1);
+  });
 
   it("nests assigned projects under their folder tree", () => {
     const [claude, codex] = groupByProviderWithFolders(
