@@ -10,4 +10,5 @@ pub mod fts;
 pub mod live;
 pub mod provider;
 pub mod providers;
+pub mod transfer;
 pub mod types;

@@ -6,6 +6,10 @@ use tauri::{AppHandle, Manager};
 use crate::modules::agent_sessions::fts::FtsIndex;
 use crate::modules::agent_sessions::provider::{binary_in_path, AgentProvider};
 use crate::modules::agent_sessions::providers::all_providers;
+use crate::modules::agent_sessions::providers::claude::encode_cwd;
+use crate::modules::agent_sessions::transfer::{
+    self, ExportItem, ImportOutcome, ManifestSessionInfo,
+};
 use crate::modules::agent_sessions::types::{
     AgentProviderInfo, AgentSession, LiveAgentSession, PreviewTurn, SessionRef,
 };
@@ -231,6 +235,108 @@ pub async fn agent_search_sessions(
             .fts(&app)
             .map(|fts| fts.search(&query, 200))
             .unwrap_or_default())
+    })
+    .await
+}
+
+fn claude_provider(state: &AgentSessionsState) -> Result<&dyn AgentProvider, String> {
+    state
+        .providers
+        .iter()
+        .map(|p| p.as_ref())
+        .find(|p| p.id() == "claude")
+        .ok_or_else(|| "claude provider unavailable".to_string())
+}
+
+fn claude_projects_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".claude")
+        .join("projects")
+}
+
+#[tauri::command]
+pub async fn agent_export_sessions(
+    items: Vec<ExportItem>,
+    dest_path: String,
+    app: AppHandle,
+) -> Result<usize, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        let claude = claude_provider(&state)?;
+        let sessions = list_sessions_inner(&state, false)?;
+        let entries: Vec<_> = items
+            .into_iter()
+            .filter_map(|item| {
+                sessions
+                    .iter()
+                    .find(|s| s.provider == "claude" && s.id == item.session_id)
+                    .map(|s| (s.clone(), item))
+            })
+            .collect();
+        transfer::export_sessions(
+            &entries,
+            |id| claude.locate(id),
+            std::path::Path::new(&dest_path),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_read_manifest(zip_path: String) -> Result<Vec<ManifestSessionInfo>, String> {
+    blocking(move || transfer::read_manifest(std::path::Path::new(&zip_path))).await
+}
+
+#[tauri::command]
+pub async fn agent_import_sessions(
+    zip_path: String,
+    dest_cwd: String,
+    app: AppHandle,
+) -> Result<ImportOutcome, String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        let dest_dir = claude_projects_dir().join(encode_cwd(&dest_cwd));
+        // Imports target existing projects only: Claude resumes sessions under
+        // a cwd it has already encoded a dir for.
+        if !dest_dir.is_dir() {
+            return Err(format!("no existing Claude project for {dest_cwd}"));
+        }
+        let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
+        let outcome = transfer::import_archive(std::path::Path::new(&zip_path), &dest_dir)?;
+        let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
+        *cache = None;
+        Ok(outcome)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_move_session(
+    session_id: String,
+    source_cwd: String,
+    dest_cwd: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<AgentSessionsState>();
+        let claude = claude_provider(&state)?;
+        let live: std::collections::HashSet<String> = claude
+            .live_sessions()
+            .into_iter()
+            .map(|l| l.session_id)
+            .collect();
+        let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
+        transfer::move_session(
+            &claude_projects_dir(),
+            &session_id,
+            &encode_cwd(&source_cwd),
+            &encode_cwd(&dest_cwd),
+            |id| live.contains(id),
+        )?;
+        let mut cache = state.cache.lock().map_err(|e| e.to_string())?;
+        *cache = None;
+        Ok(())
     })
     .await
 }
