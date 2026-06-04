@@ -12,6 +12,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getLaunchDir } from "@/lib/launchDir";
 import { IS_WINDOWS } from "@/lib/platform";
+import { usePresence } from "@/lib/usePresence";
 import { quoteShellArg } from "@/lib/shellQuote";
 import { useZoom } from "@/lib/useZoom";
 import {
@@ -91,6 +92,8 @@ import {
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import { useWorkspaceEnvStore } from "@/modules/workspace";
+import type { SearchAddon } from "@xterm/addon-search";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
@@ -191,6 +194,7 @@ export default function App() {
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const miniOpen = useChatStore((s) => s.mini.open);
+  const miniPresence = usePresence(miniOpen, 200);
   const openMini = useChatStore((s) => s.openMini);
   const focusInput = useChatStore((s) => s.focusInput);
   const openPanel = useChatStore((s) => s.openPanel);
@@ -356,6 +360,7 @@ export default function App() {
     captureActiveSelection,
     askFromSelection,
   });
+  const askPresence = usePresence(Boolean(askPopup), 120);
 
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
@@ -923,25 +928,22 @@ export default function App() {
                   </div>
 
                   {keysLoaded ? (
-                    <motion.div
+                    <div
                       data-ai-input-bar
-                      initial={false}
-                      animate={{
-                        height: panelOpen ? "auto" : 0,
-                        opacity: panelOpen ? 1 : 0,
-                      }}
-                      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                      className="overflow-hidden"
+                      data-state={panelOpen ? "open" : "closed"}
+                      className="terax-reveal"
                       aria-hidden={!panelOpen}
                     >
-                      {hasComposer ? (
-                        <AiInputBar />
-                      ) : (
-                        <AiInputBarConnect
-                          onAdd={() => void openSettingsWindow("models")}
-                        />
-                      )}
-                    </motion.div>
+                      <div>
+                        {hasComposer ? (
+                          <AiInputBar />
+                        ) : (
+                          <AiInputBarConnect
+                            onAdd={() => void openSettingsWindow("models")}
+                          />
+                        )}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               </ResizablePanel>
@@ -980,18 +982,18 @@ export default function App() {
             </>
           ) : null}
 
-          <AnimatePresence>
-            {miniOpen && hasComposer ? <AiMiniWindow key="ai-mini" /> : null}
-            {askPopup ? (
-              <SelectionAskAi
-                key="ask-ai-popup"
-                x={askPopup.x}
-                y={askPopup.y}
-                onAsk={onAskFromSelection}
-                onDismiss={() => setAskPopup(null)}
-              />
-            ) : null}
-          </AnimatePresence>
+          {hasComposer && miniPresence.mounted ? (
+            <AiMiniWindow state={miniPresence.state} />
+          ) : null}
+          {askPresence.mounted ? (
+            <SelectionAskAi
+              state={askPresence.state}
+              x={askPopup?.x ?? 0}
+              y={askPopup?.y ?? 0}
+              onAsk={onAskFromSelection}
+              onDismiss={() => setAskPopup(null)}
+            />
+          ) : null}
 
           <CommandPalette
             open={commandPaletteOpen}
