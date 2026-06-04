@@ -222,7 +222,7 @@ describe("context usage helpers", () => {
   });
 
   it("escalates color as context runs out", () => {
-    expect(contextColorClass(10)).toBe("text-muted-foreground");
+    expect(contextColorClass(10)).toBe("text-emerald-500");
     expect(contextColorClass(55)).toBe("text-amber-500");
     expect(contextColorClass(80)).toBe("text-orange-500");
     expect(contextColorClass(95)).toBe("text-red-500");

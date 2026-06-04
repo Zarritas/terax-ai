@@ -422,10 +422,11 @@ export function contextPercent(tokens: number, window: number): number {
   return Math.min(100, Math.round((tokens / window) * 100));
 }
 
-/** Color by how much context remains: quiet until half, then escalating. */
+/** Color by how much context remains: green while healthy, escalating
+ * through amber and orange to red as the window fills up. */
 export function contextColorClass(percentUsed: number): string {
   if (percentUsed >= 90) return "text-red-500";
   if (percentUsed >= 75) return "text-orange-500";
   if (percentUsed >= 50) return "text-amber-500";
-  return "text-muted-foreground";
+  return "text-emerald-500";
 }
