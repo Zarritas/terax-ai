@@ -1,6 +1,6 @@
 pub mod modules;
 
-use modules::{agent, agent_sessions, fs, git, net, pty, secrets, shell, workspace};
+use modules::{agent, agent_sessions, agents, fs, git, net, pty, secrets, shell, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
@@ -228,6 +228,10 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_claude_hooks,
             agent::agent_claude_hooks_status,
+            agent::agent_enable_codex_hooks,
+            agent::agent_codex_hooks_status,
+            agents::gemini::agent_enable_gemini_hooks,
+            agents::gemini::agent_gemini_hooks_status,
             agent_sessions::commands::agent_providers,
             agent_sessions::commands::agent_list_sessions,
             agent_sessions::commands::agent_live_sessions,

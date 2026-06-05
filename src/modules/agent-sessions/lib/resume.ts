@@ -22,8 +22,9 @@ export type AgentSessionsBridgeDeps = {
     cwd: string | null;
   }) => void;
   removeManaged: (leafId: number) => void;
-  /** Resolves when Claude Code's OSC hooks are installed; other providers skip it. */
-  enableClaudeHooks: () => Promise<unknown>;
+  /** Resolves when the provider's OSC notification hooks are installed
+   * (claude/codex/gemini); providers without hooks resolve immediately. */
+  enableAgentHooks: (provider: string) => Promise<unknown>;
   notify: (message: string) => void;
   /** Fallback cwd for sessions whose provider couldn't recover one. */
   fallbackCwd: () => string | null;
@@ -83,10 +84,7 @@ export function createAgentSessionsBridge(
         cwd: targetCwd,
       });
     }
-    const hooks =
-      provider === "claude"
-        ? deps.enableClaudeHooks().catch(() => {})
-        : Promise.resolve();
+    const hooks = deps.enableAgentHooks(provider).catch(() => {});
     const command = argvToCommand(argv);
     const line = deps.execIntoCommand ? `exec ${command}` : command;
     void (async () => {

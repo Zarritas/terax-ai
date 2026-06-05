@@ -1,10 +1,3 @@
-import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   Loading03Icon,
@@ -14,6 +7,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { AgentIcon } from "../lib/agentIcon";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
@@ -22,6 +22,44 @@ type Props = {
   onActivate: (tabId: number, leafId: number) => void;
   onActivateLocal: () => void;
 };
+
+type HookTargetId = "claude" | "codex" | "gemini";
+
+type HookTarget = {
+  id: HookTargetId;
+  statusCommand: string;
+  enableCommand: string;
+  enableLabel: string;
+  enabledLabel: string;
+  errorLabel: string;
+};
+
+const HOOK_TARGETS: HookTarget[] = [
+  {
+    id: "claude",
+    statusCommand: "agent_claude_hooks_status",
+    enableCommand: "agent_enable_claude_hooks",
+    enableLabel: "Enable Claude Code alerts",
+    enabledLabel: "Claude Code alerts enabled",
+    errorLabel: "Could not update Claude Code config.",
+  },
+  {
+    id: "codex",
+    statusCommand: "agent_codex_hooks_status",
+    enableCommand: "agent_enable_codex_hooks",
+    enableLabel: "Enable Codex alerts",
+    enabledLabel: "Codex alerts enabled",
+    errorLabel: "Could not update Codex config.",
+  },
+  {
+    id: "gemini",
+    statusCommand: "agent_gemini_hooks_status",
+    enableCommand: "agent_enable_gemini_hooks",
+    enableLabel: "Enable Gemini alerts",
+    enabledLabel: "Gemini alerts enabled",
+    errorLabel: "Could not update Gemini config.",
+  },
+];
 
 function relativeTime(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -117,8 +155,14 @@ function NotificationRow({
 
 export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const [open, setOpen] = useState(false);
-  const [hooksReady, setHooksReady] = useState<boolean | null>(null);
-  const [installing, setInstalling] = useState(false);
+  const [hooksReady, setHooksReady] = useState<
+    Record<HookTargetId, boolean | null>
+  >({
+    claude: null,
+    codex: null,
+    gemini: null,
+  });
+  const [installing, setInstalling] = useState<HookTargetId | null>(null);
   const sessions = useAgentStore((s) => s.sessions);
   const localAgent = useAgentStore((s) => s.localAgent);
   const notifications = useAgentStore((s) => s.notifications);
@@ -137,9 +181,15 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const badge = waitingCount + unreadDone;
 
   const refreshHooks = () => {
-    invoke<boolean>("agent_claude_hooks_status")
-      .then(setHooksReady)
-      .catch(() => setHooksReady(null));
+    for (const target of HOOK_TARGETS) {
+      invoke<boolean>(target.statusCommand)
+        .then((ready) =>
+          setHooksReady((state) => ({ ...state, [target.id]: ready })),
+        )
+        .catch(() =>
+          setHooksReady((state) => ({ ...state, [target.id]: null })),
+        );
+    }
   };
 
   const onOpenChange = (next: boolean) => {
@@ -150,15 +200,15 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     }
   };
 
-  const enableClaudeHooks = async () => {
-    setInstalling(true);
+  const enableHooks = async (target: HookTarget) => {
+    setInstalling(target.id);
     try {
-      await invoke("agent_enable_claude_hooks");
-      setHooksReady(true);
+      await invoke(target.enableCommand);
+      setHooksReady((state) => ({ ...state, [target.id]: true }));
     } catch {
-      setHooksReady(false);
+      setHooksReady((state) => ({ ...state, [target.id]: false }));
     } finally {
-      setInstalling(false);
+      setInstalling(null);
     }
   };
 
@@ -220,7 +270,7 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
           <div className="border-t border-border/60 px-3 py-5 text-center text-xs leading-relaxed text-muted-foreground">
             No agent activity yet.
             <br />
-            Run the Terax agent or Claude Code to track it here.
+            Run the Terax agent, Claude Code, or Codex to track it here.
           </div>
         ) : (
           <div className="max-h-80 overflow-y-auto border-t border-border/60 p-1">
@@ -252,38 +302,51 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
           </div>
         )}
 
-        <div className="border-t flex justify-center border-border/60 p-1">
-          {hooksReady ? (
-            <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">
-              <HugeiconsIcon
-                icon={CheckmarkCircle02Icon}
-                size={13}
-                strokeWidth={1.75}
-                className="text-primary"
-              />
-              Claude Code alerts enabled
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={enableClaudeHooks}
-              disabled={installing}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-            >
-              <HugeiconsIcon
-                icon={installing ? Loading03Icon : Notification03Icon}
-                size={14}
-                strokeWidth={1.75}
-                className={cn(installing && "animate-spin")}
-              />
-              {installing ? "Enabling..." : "Enable Claude Code alerts"}
-            </button>
+        <div className="border-t flex flex-col gap-0.5 border-border/60 p-1">
+          {HOOK_TARGETS.map((target) =>
+            hooksReady[target.id] ? (
+              <div
+                key={target.id}
+                className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-muted-foreground"
+              >
+                <HugeiconsIcon
+                  icon={CheckmarkCircle02Icon}
+                  size={13}
+                  strokeWidth={1.75}
+                  className="text-primary"
+                />
+                {target.enabledLabel}
+              </div>
+            ) : (
+              <div key={target.id}>
+                <button
+                  type="button"
+                  onClick={() => void enableHooks(target)}
+                  disabled={installing !== null}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+                >
+                  <HugeiconsIcon
+                    icon={
+                      installing === target.id
+                        ? Loading03Icon
+                        : Notification03Icon
+                    }
+                    size={14}
+                    strokeWidth={1.75}
+                    className={cn(installing === target.id && "animate-spin")}
+                  />
+                  {installing === target.id
+                    ? "Enabling..."
+                    : target.enableLabel}
+                </button>
+                {hooksReady[target.id] === false && installing !== target.id ? (
+                  <p className="px-2 pt-1 text-[11px] text-destructive">
+                    {target.errorLabel}
+                  </p>
+                ) : null}
+              </div>
+            ),
           )}
-          {hooksReady === false && !installing ? (
-            <p className="px-2 pt-1 text-[11px] text-destructive">
-              Could not update Claude Code config.
-            </p>
-          ) : null}
         </div>
       </PopoverContent>
     </Popover>
