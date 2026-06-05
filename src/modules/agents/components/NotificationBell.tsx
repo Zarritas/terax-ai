@@ -1,10 +1,3 @@
-import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   Loading03Icon,
@@ -14,6 +7,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { AgentIcon } from "../lib/agentIcon";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
@@ -23,7 +23,7 @@ type Props = {
   onActivateLocal: () => void;
 };
 
-type HookTargetId = "claude" | "codex";
+type HookTargetId = "claude" | "codex" | "gemini";
 
 type HookTarget = {
   id: HookTargetId;
@@ -50,6 +50,14 @@ const HOOK_TARGETS: HookTarget[] = [
     enableLabel: "Enable Codex alerts",
     enabledLabel: "Codex alerts enabled",
     errorLabel: "Could not update Codex config.",
+  },
+  {
+    id: "gemini",
+    statusCommand: "agent_gemini_hooks_status",
+    enableCommand: "agent_enable_gemini_hooks",
+    enableLabel: "Enable Gemini alerts",
+    enabledLabel: "Gemini alerts enabled",
+    errorLabel: "Could not update Gemini config.",
   },
 ];
 
@@ -152,6 +160,7 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   >({
     claude: null,
     codex: null,
+    gemini: null,
   });
   const [installing, setInstalling] = useState<HookTargetId | null>(null);
   const sessions = useAgentStore((s) => s.sessions);
@@ -326,7 +335,9 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
                     strokeWidth={1.75}
                     className={cn(installing === target.id && "animate-spin")}
                   />
-                  {installing === target.id ? "Enabling..." : target.enableLabel}
+                  {installing === target.id
+                    ? "Enabling..."
+                    : target.enableLabel}
                 </button>
                 {hooksReady[target.id] === false && installing !== target.id ? (
                   <p className="px-2 pt-1 text-[11px] text-destructive">

@@ -94,6 +94,7 @@ import { useWorkspaceEnvStore } from "@/modules/workspace";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useWindowCloseGuard } from "./hooks/useWindowCloseGuard";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 export default function App() {
@@ -259,6 +260,9 @@ export default function App() {
     cancelDeleteClose,
     handlePathDeleted,
   } = useTabCloseGuards({ tabs, disposeTab });
+
+  const { pendingWindowClose, confirmWindowClose, cancelWindowClose } =
+    useWindowCloseGuard(tabs);
 
   useEffect(() => {
     const live = new Set<number>();
@@ -679,7 +683,14 @@ export default function App() {
         registerManaged: (a) => useManagedAgentsStore.getState().register(a),
         removeManaged: (leafId) =>
           useManagedAgentsStore.getState().remove(leafId),
-        enableClaudeHooks: () => invoke("agent_enable_claude_hooks"),
+        enableAgentHooks: (provider) => {
+          const command = {
+            claude: "agent_enable_claude_hooks",
+            codex: "agent_enable_codex_hooks",
+            gemini: "agent_enable_gemini_hooks",
+          }[provider];
+          return command ? invoke(command) : Promise.resolve();
+        },
         notify: (message) => toast.info(message),
         fallbackCwd: () => explorerRoot ?? launchCwd ?? home ?? null,
         execIntoCommand: !IS_WINDOWS,
@@ -1025,6 +1036,9 @@ export default function App() {
             pendingDeleteTabs={pendingDeleteTabs}
             onCancelDeleteClose={cancelDeleteClose}
             onConfirmDeleteClose={confirmDeleteClose}
+            pendingWindowClose={pendingWindowClose}
+            onCancelWindowClose={cancelWindowClose}
+            onConfirmWindowClose={confirmWindowClose}
           />
         </div>
       </TooltipProvider>

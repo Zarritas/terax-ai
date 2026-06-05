@@ -21,6 +21,9 @@ type Props = {
   pendingDeleteTabs: number[] | null;
   onCancelDeleteClose: () => void;
   onConfirmDeleteClose: () => void;
+  pendingWindowClose: boolean;
+  onCancelWindowClose: () => void;
+  onConfirmWindowClose: () => void;
 };
 
 /** Confirmation dialogs for closing dirty editors and terminals with live processes. */
@@ -35,6 +38,9 @@ export function CloseDialogs({
   pendingDeleteTabs,
   onCancelDeleteClose,
   onConfirmDeleteClose,
+  pendingWindowClose,
+  onCancelWindowClose,
+  onConfirmWindowClose,
 }: Props) {
   return (
     <>
@@ -112,6 +118,29 @@ export function CloseDialogs({
             </AlertDialogCancel>
             <AlertDialogAction onClick={onConfirmDeleteClose}>
               Close Anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={pendingWindowClose}
+        onOpenChange={(open) => !open && onCancelWindowClose()}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Quit Terax?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Processes are still running in your terminals. Closing the window
+              will terminate all of them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={onCancelWindowClose}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={onConfirmWindowClose}>
+              Quit Anyway
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

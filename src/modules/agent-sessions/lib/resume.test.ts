@@ -45,7 +45,7 @@ function makeDeps(): AgentSessionsBridgeDeps & {
     getManagedBySessionId: vi.fn(() => undefined),
     registerManaged: vi.fn(),
     removeManaged: vi.fn(),
-    enableClaudeHooks: vi.fn(() => Promise.resolve()),
+    enableAgentHooks: vi.fn(() => Promise.resolve()),
     notify: vi.fn(),
     fallbackCwd: vi.fn(() => "/home/user"),
     execIntoCommand: true,
@@ -103,10 +103,10 @@ describe("resumeSession", () => {
     await flush();
     // exec replaces the shell so quitting the agent closes the pane.
     expect(deps.writes).toEqual([[11, "exec claude --resume sid-1\r"]]);
-    expect(deps.enableClaudeHooks).toHaveBeenCalled();
+    expect(deps.enableAgentHooks).toHaveBeenCalledWith("claude");
   });
 
-  it("skips claude hooks for other providers and uses fallback cwd", async () => {
+  it("enables provider-specific hooks and uses fallback cwd", async () => {
     const bridge = createAgentSessionsBridge(deps);
     bridge.resumeSession(
       session({
@@ -120,7 +120,7 @@ describe("resumeSession", () => {
       "codex · Mi tarea",
     );
     await flush();
-    expect(deps.enableClaudeHooks).not.toHaveBeenCalled();
+    expect(deps.enableAgentHooks).toHaveBeenCalledWith("codex");
     expect(deps.writes).toEqual([[11, "exec codex resume sid-1\r"]]);
   });
 
