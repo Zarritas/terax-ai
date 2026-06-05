@@ -50,6 +50,7 @@ type Session = {
   snapshot: string | null;
   searchQuery: string | null;
   dormantRing: DormantRing;
+  pendingInput: string;
   hasSlot: boolean;
   // True if the slot was in alt-screen mode (TUI like vim, htop, dofek)
   // at the most recent release. Read once on the next bind to trigger a
@@ -94,8 +95,12 @@ export function whenSessionReady(leafId: number, timeoutMs = 4000): Promise<void
 
 export function writeToSession(leafId: number, data: string): boolean {
   const s = sessions.get(leafId);
-  if (!s || !s.pty) return false;
-  void s.pty.write(data);
+  if (!s || s.shellExited) return false;
+  if (s.pty) {
+    void s.pty.write(data);
+    return true;
+  }
+  s.pendingInput += data;
   return true;
 }
 
@@ -128,7 +133,8 @@ configureRendererPool({
     if (!s) return null;
     return {
       writeToPty: (data) => {
-        s.pty?.write(data);
+        if (s.pty) void s.pty.write(data);
+        else s.pendingInput += data;
       },
       resizePty: (cols, rows) => {
         s.cols = cols;
@@ -181,6 +187,7 @@ function ensureSession(leafId: number, initialCwd?: string): Session {
     snapshot: null,
     searchQuery: null,
     dormantRing: new DormantRing(),
+    pendingInput: "",
     hasSlot: false,
     altScreenAtRelease: false,
   };
@@ -217,6 +224,7 @@ async function openPtyForSession(
       onExit: (code) => {
         s.shellExited = true;
         s.pty = null;
+        s.pendingInput = "";
         const slot = getSlotForLeaf(leafId);
         if (slot) slot.term.options.disableStdin = true;
         if (s.callbacks.onExit) s.callbacks.onExit(code);
@@ -306,6 +314,10 @@ function attachSession(
           return;
         }
         s.pty = pty;
+        if (s.pendingInput) {
+          void pty.write(s.pendingInput);
+          s.pendingInput = "";
+        }
         if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
       })
       .catch((e) => {
@@ -335,6 +347,7 @@ export async function respawnSession(
   s.dormantRing = new DormantRing();
   s.shellExited = false;
   s.pendingExit = null;
+  s.pendingInput = "";
   s.altScreenAtRelease = false;
 
   const slot = getSlotForLeaf(leafId);
@@ -359,6 +372,10 @@ export async function respawnSession(
     return;
   }
   s.pty = pty;
+  if (s.pendingInput) {
+    void pty.write(s.pendingInput);
+    s.pendingInput = "";
+  }
   if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
 }
 
@@ -382,6 +399,7 @@ export function disposeSession(leafId: number): void {
   s.snapshot = null;
   s.pty?.close();
   s.pty = null;
+  s.pendingInput = "";
   sessions.delete(leafId);
   readyLeaves.delete(leafId);
   const waiters = readyWaiters.get(leafId);
@@ -486,7 +504,12 @@ export function useTerminalSession({
   }, [leafId, visible, focused]);
 
   const write = useCallback(
-    (data: string) => sessions.get(leafId)?.pty?.write(data),
+    (data: string) => {
+      const s = sessions.get(leafId);
+      if (!s || s.shellExited) return;
+      if (s.pty) void s.pty.write(data);
+      else s.pendingInput += data;
+    },
     [leafId],
   );
 
